@@ -41,7 +41,6 @@ def _sample_live(duration=5):
                 sample["cpu_total"] = psutil.cpu_percent(interval=1)
                 sample["cpu_per_core"] = psutil.cpu_percent(interval=None, percpu=True)
                 sample["ram_pct"] = psutil.virtual_memory().percent
-                sample["swap_pct"] = psutil.swap_memory().percent
 
                 freq = psutil.cpu_freq()
                 sample["cpu_freq"] = freq.current if freq else None

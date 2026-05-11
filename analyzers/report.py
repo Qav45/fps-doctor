@@ -6,7 +6,10 @@ import socket
 
 
 TOOL_NAME = "FPS Doctor"
-VERSION = "1.0.0"
+try:
+    from __version__ import VERSION
+except ImportError:
+    VERSION = "1.1.0"
 
 
 def _line(char="=", width=80):
@@ -327,13 +330,13 @@ def format_monitoring(monitoring_data):
         ("net_sent_mbps", "Net Up (MB/s)"),
     ]
 
+    def fmt(v):
+        return f"{v:.1f}" if v is not None else "N/A"
+
     for key, label in metric_display:
         s = stats.get(key, {})
         if s.get("mean") is None:
             continue
-
-        def fmt(v):
-            return f"{v:.1f}" if v is not None else "N/A"
 
         lines.append(
             f"  {label:<{col_metric}} "

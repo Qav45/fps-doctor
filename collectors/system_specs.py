@@ -5,6 +5,7 @@ import platform
 import socket
 import ctypes
 import os
+import re
 import datetime
 
 try:
@@ -115,10 +116,11 @@ def collect_gpu(wmi_client):
             "current_resolution": r.get("VideoModeDescription") or "N/A",
             "refresh_rate": r.get("CurrentRefreshRate") or "N/A",
         }
-        # Convert AdapterRAM (bytes) to MB
+        # AdapterRAM is uint32 in WMI — overflows at 4 GB. Values near 0xFFFFFFFF are bogus.
         try:
             ram_bytes = int(r.get("AdapterRAM") or 0)
-            if ram_bytes > 0:
+            _UINT32_MAX = 4294967295
+            if 0 < ram_bytes < _UINT32_MAX - (1024 * 1024):
                 gpu["vram_mb"] = ram_bytes // (1024 * 1024)
         except Exception:
             pass
@@ -273,8 +275,7 @@ def collect_storage(wmi_client):
 
         # Match this physical disk to its logical partitions via WMI ASSOCIATORS
         try:
-            import re as _re
-            m = _re.search(r'(\d+)$', drive["device_id"])
+            m = re.search(r'(\d+)$', drive["device_id"])
             if m:
                 disk_idx = int(m.group(1))
                 part_rows = wmi_query(

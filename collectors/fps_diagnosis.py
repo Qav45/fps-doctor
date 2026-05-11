@@ -4,8 +4,11 @@ import subprocess
 import socket
 import time
 import os
+import ctypes
+import tempfile
 import winreg
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     import psutil
@@ -47,11 +50,12 @@ def check_driver_issues(wmi_client):
     results = {}
 
     # GPU driver age
+    rows = []
     try:
         rows = wmi_query(
             wmi_client,
-            "SELECT DriverDate, Name FROM Win32_VideoController",
-            ["DriverDate", "Name"]
+            "SELECT DriverDate, DriverVersion, Name FROM Win32_VideoController",
+            ["DriverDate", "DriverVersion", "Name"]
         )
         if rows:
             dd = rows[0].get("DriverDate") or ""
@@ -257,7 +261,7 @@ def check_background_processes():
         # Third-party AV
         av_processes = ["avp.exe", "avgnt.exe", "avguard.exe", "bdagent.exe", "mcshield.exe",
                         "mbam.exe", "malwarebytes.exe", "norton.exe", "nortonsecurity.exe",
-                        "csc.exe", "savservice.exe", "esets_daemon.exe"]
+                        "savservice.exe", "esets_daemon.exe"]
         found_av = [p["name"] for p in all_procs if p["name"].lower() in av_processes]
         if found_av:
             results["third_party_antivirus"] = _warn(
@@ -298,7 +302,6 @@ def check_background_processes():
 
     # SysMain service check
     try:
-        import winreg
         sysmain_start = read_reg(
             winreg.HKEY_LOCAL_MACHINE,
             r"SYSTEM\CurrentControlSet\Services\SysMain",
@@ -507,7 +510,7 @@ def check_memory_issues():
             swap_pct = swap.percent
             if swap_pct > 50:
                 results["pagefile_usage"] = _warn(
-                    f"{swap_pct:.1f}% ({swap.used // (1024**3):.1f}GB used)",
+                    f"{swap_pct:.1f}% ({swap.used / (1024**3):.1f}GB used)",
                     "High pagefile usage means Windows is using disk as RAM, causing stutters. Add more RAM."
                 )
             else:
@@ -519,7 +522,6 @@ def check_memory_issues():
 
     # Hardware reserved memory check
     try:
-        import winreg
         wmi_client = get_wmi_client()
         os_rows = wmi_query(
             wmi_client,
@@ -547,7 +549,6 @@ def check_memory_issues():
 
 def _disk_io_benchmark():
     """16MB sequential read/write benchmark. Returns (read_mbps, write_mbps) or (None, None)."""
-    import tempfile, time as _time
     block_size = 4 * 1024 * 1024  # 4MB
     num_blocks = 4  # 16MB total
     total_mb = block_size * num_blocks / (1024 * 1024)
@@ -556,7 +557,7 @@ def _disk_io_benchmark():
         with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as f:
             tmp_path = f.name
             block = b"\x00" * block_size
-            t0 = _time.time()
+            t0 = time.time()
             for _ in range(num_blocks):
                 f.write(block)
             f.flush()
@@ -564,13 +565,13 @@ def _disk_io_benchmark():
                 os.fsync(f.fileno())
             except Exception:
                 pass
-        write_time = _time.time() - t0
+        write_time = time.time() - t0
 
-        t0 = _time.time()
+        t0 = time.time()
         with open(tmp_path, "rb") as f:
             while f.read(block_size):
                 pass
-        read_time = _time.time() - t0
+        read_time = time.time() - t0
 
         os.unlink(tmp_path)
         return (
@@ -683,7 +684,7 @@ def check_network_issues():
 
     # Ping test
     try:
-        ping_out = _run(["ping", "-n", "4", "8.8.8.8"], "")
+        ping_out = _run(["ping", "-n", "2", "-w", "1000", "8.8.8.8"], "")
         ping_ms = None
         for line in ping_out.split("\n"):
             if "Average" in line or "average" in line:
@@ -1057,7 +1058,6 @@ def check_windows_settings():
 
     # Timer resolution
     try:
-        import ctypes
         ntdll = ctypes.WinDLL("ntdll.dll")
         minimum = ctypes.c_ulong()
         maximum = ctypes.c_ulong()
@@ -1441,7 +1441,6 @@ def check_display_issues(wmi_client):
 
     # Multi-monitor check
     try:
-        import ctypes
         monitor_count = ctypes.windll.user32.GetSystemMetrics(80)  # SM_CMONITORS
         if monitor_count > 1:
             results["multi_monitor"] = _warn(
@@ -1460,7 +1459,6 @@ def check_display_issues(wmi_client):
 
     # DPI scaling check
     try:
-        import ctypes
         dpi = ctypes.windll.user32.GetDpiForSystem()
         scaling_pct = round(dpi / 96 * 100)
         if scaling_pct > 100:
@@ -1542,24 +1540,22 @@ def check_startup_programs():
 
 # ─── 2.14 DPC Latency ───────────────────────────────────────────────────────
 
-def check_dpc_latency():
+def check_dpc_latency(wmi_client):
     results = {}
     try:
-        wmi_client = get_wmi_client()
         rows1 = wmi_query(
             wmi_client,
             "SELECT DPCsQueuedPersec FROM Win32_PerfRawData_PerfOS_Processor WHERE Name='_Total'",
             ["DPCsQueuedPersec"]
         )
-        import time as _time
-        t1 = _time.time()
-        _time.sleep(1)
+        t1 = time.time()
+        time.sleep(1)
         rows2 = wmi_query(
             wmi_client,
             "SELECT DPCsQueuedPersec FROM Win32_PerfRawData_PerfOS_Processor WHERE Name='_Total'",
             ["DPCsQueuedPersec"]
         )
-        elapsed = _time.time() - t1
+        elapsed = time.time() - t1
 
         if rows1 and rows2 and elapsed > 0:
             d1 = int(rows1[0].get("DPCsQueuedPersec") or 0)
@@ -1581,10 +1577,9 @@ def check_dpc_latency():
 
 # ─── 2.15 Problematic Services ──────────────────────────────────────────────
 
-def check_problematic_services():
+def check_problematic_services(wmi_client):
     results = {}
     try:
-        wmi_client = get_wmi_client()
         svc_rows = wmi_query(
             wmi_client,
             "SELECT Name FROM Win32_Service WHERE State='Running'",
@@ -1613,56 +1608,58 @@ def check_problematic_services():
 def check_event_log_errors():
     results = {}
 
-    # WHEA hardware errors (IDs 17-20)
-    try:
-        whea_out = _run([
-            "wevtutil", "qe", "System",
-            "/q:*[System[Provider[@Name='Microsoft-Windows-WHEA-Logger'] and (EventID>=17 and EventID<=20)]]",
-            "/c:5", "/rd:true", "/f:text"
-        ], "")
-        if whea_out and "Event[" in whea_out:
-            results["whea_hardware_errors"] = _crit(
-                "WHEA errors in event log",
-                "Hardware errors detected. This indicates faulty RAM, CPU, or motherboard. Run mdsched.exe (Windows Memory Diagnostic)."
-            )
-        else:
-            results["whea_hardware_errors"] = _ok("No recent WHEA hardware errors")
-    except Exception:
-        results["whea_hardware_errors"] = _ok("Could not query event log")
+    def _whea():
+        try:
+            out = _run([
+                "wevtutil", "qe", "System",
+                "/q:*[System[Provider[@Name='Microsoft-Windows-WHEA-Logger'] and (EventID>=17 and EventID<=20)]]",
+                "/c:5", "/rd:true", "/f:text"
+            ], "")
+            if out and "Event[" in out:
+                return {"whea_hardware_errors": _crit(
+                    "WHEA errors in event log",
+                    "Hardware errors detected. This indicates faulty RAM, CPU, or motherboard. Run mdsched.exe (Windows Memory Diagnostic)."
+                )}
+            return {"whea_hardware_errors": _ok("No recent WHEA hardware errors")}
+        except Exception:
+            return {"whea_hardware_errors": _ok("Could not query event log")}
 
-    # Display driver crashes (Event ID 4101 — nvlddmkm/atikmpag)
-    try:
-        dd_out = _run([
-            "wevtutil", "qe", "System",
-            "/q:*[System[Provider[@Name='Display'] and EventID=4101]]",
-            "/c:5", "/rd:true", "/f:text"
-        ], "")
-        if dd_out and "Event[" in dd_out:
-            results["display_driver_crashes"] = _warn(
-                "GPU driver crashes in event log",
-                "GPU driver has crashed recently (nvlddmkm/atikmpag). Update GPU drivers or check GPU temperatures and stability."
-            )
-        else:
-            results["display_driver_crashes"] = _ok("No recent display driver crashes")
-    except Exception:
-        results["display_driver_crashes"] = _ok("Could not query event log")
+    def _display_driver():
+        try:
+            out = _run([
+                "wevtutil", "qe", "System",
+                "/q:*[System[Provider[@Name='Display'] and EventID=4101]]",
+                "/c:5", "/rd:true", "/f:text"
+            ], "")
+            if out and "Event[" in out:
+                return {"display_driver_crashes": _warn(
+                    "GPU driver crashes in event log",
+                    "GPU driver has crashed recently (nvlddmkm/atikmpag). Update GPU drivers or check GPU temperatures and stability."
+                )}
+            return {"display_driver_crashes": _ok("No recent display driver crashes")}
+        except Exception:
+            return {"display_driver_crashes": _ok("Could not query event log")}
 
-    # Kernel power events (Event ID 41 — unexpected shutdown)
-    try:
-        kp_out = _run([
-            "wevtutil", "qe", "System",
-            "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41]]",
-            "/c:5", "/rd:true", "/f:text"
-        ], "")
-        if kp_out and "Event[" in kp_out:
-            results["kernel_power_events"] = _warn(
-                "Unexpected shutdown events detected",
-                "System experienced unexpected shutdowns/restarts (Event ID 41). Check PSU, overclocking stability, and temperatures."
-            )
-        else:
-            results["kernel_power_events"] = _ok("No recent unexpected shutdown events")
-    except Exception:
-        results["kernel_power_events"] = _ok("Could not query event log")
+    def _kernel_power():
+        try:
+            out = _run([
+                "wevtutil", "qe", "System",
+                "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41]]",
+                "/c:5", "/rd:true", "/f:text"
+            ], "")
+            if out and "Event[" in out:
+                return {"kernel_power_events": _warn(
+                    "Unexpected shutdown events detected",
+                    "System experienced unexpected shutdowns/restarts (Event ID 41). Check PSU, overclocking stability, and temperatures."
+                )}
+            return {"kernel_power_events": _ok("No recent unexpected shutdown events")}
+        except Exception:
+            return {"kernel_power_events": _ok("Could not query event log")}
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(_whea), executor.submit(_display_driver), executor.submit(_kernel_power)]
+        for f in futures:
+            results.update(f.result())
 
     return results
 
@@ -1687,8 +1684,8 @@ def run_fps_diagnosis(system_specs=None):
         "bios_firmware": check_bios_firmware(wmi_client, system_specs),
         "display_issues": check_display_issues(wmi_client),
         "startup_programs": check_startup_programs(),
-        "dpc_latency": check_dpc_latency(),
-        "problematic_services": check_problematic_services(),
+        "dpc_latency": check_dpc_latency(wmi_client),
+        "problematic_services": check_problematic_services(wmi_client),
         "event_log_errors": check_event_log_errors(),
     }
 

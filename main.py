@@ -37,7 +37,10 @@ BANNER = r"""
  |_|     |_|    |_____/   |_____/ \___/ \___|\__\___/|_|
 """
 
-VERSION = "1.0.0"
+try:
+    from __version__ import VERSION
+except ImportError:
+    VERSION = "1.1.0"
 
 
 def is_admin():
@@ -295,6 +298,11 @@ def parse_args():
         action="store_true",
         help="Also export a structured JSON report alongside the text report"
     )
+    parser.add_argument(
+        "--no-benchmark",
+        action="store_true",
+        help="Skip the disk I/O benchmark (reduces scan time, avoids unnecessary SSD writes)"
+    )
     return parser.parse_args()
 
 
@@ -337,17 +345,10 @@ def main():
         system_specs = {}
 
     # ── Phase 2: FPS Diagnosis ───────────────────────────────────────────────
-    print_phase(console, 2, "Running FPS Loss Diagnosis (12 sections)")
+    print_phase(console, 2, "Running FPS Loss Diagnosis (16 sections)")
     diagnosis = {}
     try:
         from collectors.fps_diagnosis import run_fps_diagnosis
-
-        section_names = [
-            "Driver Issues", "Background Processes", "Thermal & Power",
-            "Memory Issues", "Storage Issues", "Network Issues",
-            "Software Overlays", "Windows Settings", "GPU Settings",
-            "DirectX & Runtimes", "BIOS & Firmware", "Display Issues",
-        ]
 
         if RICH_OK:
             with Progress(
@@ -359,7 +360,7 @@ def main():
                 console=console,
                 transient=True,
             ) as progress:
-                task = progress.add_task("Running diagnosis...", total=12)
+                task = progress.add_task("Running diagnosis...", total=16)
                 diagnosis = run_fps_diagnosis(system_specs)
                 progress.update(task, completed=12)
         else:
