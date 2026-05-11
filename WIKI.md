@@ -12,30 +12,83 @@ This page describes **what you can do with the tool**, **what each phase checks*
 
 | Item | Notes |
 |------|--------|
-| **OS** | Windows 10 or 11 |
-| **Python** | 3.9+ (`setup.py`); README suggests 3.10+ — use 3.10+ if you hit edge-case issues |
-| **Privileges** | **Administrator** recommended; without admin, some WMI/registry reads may be incomplete |
-| **GPU metrics** | `GPUtil` is used for GPU load/temperature in bottleneck and live monitoring; if it fails, GPU fields may show as unavailable |
+| **OS** | Windows 10 or 11 — no macOS or Linux support |
+| **Python** | 3.10+ recommended ([download](https://www.python.org/downloads/)); 3.9 may work but is untested |
+| **Privileges** | **Run as Administrator** — without it, some WMI/registry reads return incomplete data or fail silently |
+| **GPU metrics** | `GPUtil` is used for GPU load/temperature; if it cannot reach the driver, GPU fields show as unavailable |
 
-**Dependencies:** `psutil`, `WMI`, `GPUtil`, `rich`, `pywin32` (see `requirements.txt`).
+**Dependencies installed automatically:** `psutil`, `WMI`, `GPUtil`, `rich`, `pywin32`.
 
 ---
 
 ## Installation
 
-From the cloned repository:
+### Option A — Install from the wheel (recommended, no git needed)
 
-```bash
+1. Download `fps_doctor-1.0.0-py3-none-any.whl` from the [v1.0.0 release page](https://github.com/Qav45/fps-doctor/releases/tag/v1.0.0).
+2. Open a terminal **as Administrator** and run:
+
+```
+pip install fps_doctor-1.0.0-py3-none-any.whl
+```
+
+3. Run it:
+
+```
+fps-doctor
+```
+
+The `fps-doctor` command is now permanently on your PATH.
+
+---
+
+### Option B — Clone and run (no install)
+
+```
+git clone https://github.com/Qav45/fps-doctor.git
+cd fps-doctor
 pip install -r requirements.txt
+python main.py
 ```
 
-Optional: install as a package so the `fps-doctor` command is on your PATH:
+Use this if you want to inspect or modify the source without installing anything system-wide.
 
-```bash
+---
+
+### Option C — Editable install (for development)
+
+```
+git clone https://github.com/Qav45/fps-doctor.git
+cd fps-doctor
 pip install -e .
+fps-doctor
 ```
 
-Then you can run `fps-doctor` instead of `python main.py`.
+Source changes take effect immediately — no reinstall needed.
+
+---
+
+### Verify the install
+
+After any method, confirm dependencies loaded correctly:
+
+```
+python -c "import psutil, wmi, GPUtil, rich; print('All dependencies OK')"
+```
+
+If a module is missing, install it manually: `pip install <module-name>`.
+
+---
+
+### Common issues
+
+| Problem | Fix |
+|---------|-----|
+| `pip` not recognised | Use `python -m pip install ...` instead |
+| WMI errors or empty hardware fields | Re-run the terminal as Administrator |
+| GPU shows as unavailable | Ensure your GPU driver is up to date; `pip install --upgrade GPUtil` |
+| `fps-doctor` command not found after install | Add Python's Scripts folder to PATH, or use `python -m fps_doctor` |
+| Antivirus flags the disk benchmark | Add the project folder to your AV exclusions; the benchmark writes a small temp file to measure disk speed |
 
 ---
 

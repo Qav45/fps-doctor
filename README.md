@@ -5,20 +5,44 @@ Windows PC performance diagnostic tool. Identifies FPS-killing processes, bottle
 ## Requirements
 
 - Windows 10 or 11
-- Python 3.10+
-- Administrator privileges recommended
+- Python 3.10 or later — [download from python.org](https://www.python.org/downloads/) if needed
+- Run your terminal **as Administrator** for full results (right-click → "Run as administrator")
 
 ## Installation
 
+### Option A — Install from the wheel (recommended, no git needed)
+
+Download `fps_doctor-1.0.0-py3-none-any.whl` from the [v1.0.0 release](https://github.com/Qav45/fps-doctor/releases/tag/v1.0.0), then:
+
 ```
+pip install fps_doctor-1.0.0-py3-none-any.whl
+fps-doctor
+```
+
+That's it. The `fps-doctor` command is now on your PATH.
+
+### Option B — Clone and run
+
+```
+git clone https://github.com/Qav45/fps-doctor.git
+cd fps-doctor
 pip install -r requirements.txt
+python main.py
 ```
 
-Optional — install as a package so `fps-doctor` is on your PATH:
+### Option C — Editable install (for development)
 
 ```
+git clone https://github.com/Qav45/fps-doctor.git
+cd fps-doctor
 pip install -e .
+fps-doctor
 ```
+
+Changes you make to the source are reflected immediately without reinstalling.
+
+> **Tip:** If `pip` is not recognised, try `python -m pip install ...` instead.  
+> **Tip:** If you get WMI or registry errors, make sure the terminal is running as Administrator.
 
 ## Usage
 
