@@ -33,12 +33,13 @@ def _sample_live(duration=5):
     try:
         # Prime psutil cpu_percent (first call always returns 0)
         psutil.cpu_percent(interval=None)
+        psutil.cpu_percent(interval=None, percpu=True)
         time.sleep(1)
 
         for _ in range(max(1, duration - 1)):
             sample = {}
             try:
-                sample["cpu_total"] = psutil.cpu_percent(interval=1)
+                sample["cpu_total"] = psutil.cpu_percent(interval=None)
                 sample["cpu_per_core"] = psutil.cpu_percent(interval=None, percpu=True)
                 sample["ram_pct"] = psutil.virtual_memory().percent
 

@@ -115,7 +115,7 @@ If a module is missing, install it manually: `pip install <module-name>`.
 | `--no-monitor` | Skips Phase 5 entirely (no prompt) |
 | `--output PATH` | Write the text report to **PATH** (JSON name is derived by replacing `.txt` with `.json` when `--json` is used) |
 | `--json` | Also writes a structured **JSON** report next to the text report |
-| `--no-benchmark` | Documented in `--help` as skipping a disk I/O benchmark; **as of v1.1.0 this flag is not yet wired in `main.py`**, so the small sequential disk test inside diagnosis may still run |
+| `--no-benchmark` | Skips the disk I/O benchmark inside the diagnosis phase, saving time and SSD writes |
 
 **Tip:** For a **fast** audit: `python main.py --no-monitor` (or `--duration 0` without `--no-monitor` — you still get the duration prompt unless you pass `--duration 0`).
 
