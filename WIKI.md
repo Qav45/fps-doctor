@@ -257,14 +257,4 @@ Times are **approximate** and depend on CPU speed, disk speed, number of drives,
 
 ---
 
-## Publishing this as a GitHub Wiki
-
-GitHub Wikis are a separate tab on the repo. You can:
-
-1. Enable the Wiki in the repository **Settings** (if disabled).  
-2. Create a **Home** page and paste sections from this file, or  
-3. Commit this file as **`WIKI.md`** in the repo (as here) and link it from the README for users who prefer in-repo docs.
-
----
-
 *Document generated to match FPS Doctor **v1.0.0** behavior in the codebase. If the project changes, update phase counts and flags against `main.py` and the collectors.*
