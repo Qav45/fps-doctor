@@ -3,10 +3,10 @@
 import subprocess
 import winreg
 
-from utils.registry import read_reg, read_reg_dword, list_reg_subkeys
+from utils.registry import read_reg, list_reg_subkeys
 
 try:
-    import psutil
+    import psutil  # noqa: F401
     PSUTIL_OK = True
 except ImportError:
     PSUTIL_OK = False
@@ -105,12 +105,6 @@ def audit_game_dvr():
         winreg.HKEY_CURRENT_USER,
         r"SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR",
         "AllowGameDVR",
-        default=None
-    )
-    app_captures = read_reg(
-        winreg.HKEY_CURRENT_USER,
-        r"SOFTWARE\Microsoft\GameBar",
-        "UseNexusForGameBarEnabled",
         default=None
     )
     if dvr == 0:
@@ -358,12 +352,6 @@ def audit_fullscreen_optimizations():
         "GameDVR_FSEBehaviorMode",
         default=None
     )
-    fse_disabled = read_reg(
-        winreg.HKEY_CURRENT_USER,
-        r"System\GameConfigStore",
-        "GameDVR_DXGIHonorFSEWindowsCompatible",
-        default=None
-    )
     if fse == 2:
         return _item("Windows", "Fullscreen Optimizations", "FSE Preferred", "optimal",
                      "Fullscreen Exclusive is preferred. Best latency for competitive gaming.")
@@ -377,19 +365,6 @@ def audit_fullscreen_optimizations():
 
 def audit_notifications():
     try:
-        focus = read_reg(
-            winreg.HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.notifications.quiethourssettings\windows.data.notifications.quiethourssettings",
-            "Data",
-            default=None
-        )
-        # Simpler approach: check Do Not Disturb / Focus Assist
-        qa_val = read_reg(
-            winreg.HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Notifications\Settings",
-            "NOC_GLOBAL_SETTING_ALLOW_TOASTS_ABOVE_LOCK",
-            default=None
-        )
         return _item("Windows", "Focus Assist / Notifications", "Check manually", "suboptimal",
                      "Enable Focus Assist while gaming: Settings > System > Focus Assist > When I'm playing a game.")
     except Exception:
@@ -458,6 +433,109 @@ def audit_shader_cache():
         return _item("GPU", "DirectX Shader Cache", "Unknown", "suboptimal",
                      "Could not check shader cache status.")
 
+def audit_hyper_v():
+    try:
+        output = _run(["bcdedit", "/enum"], "")
+        hyperv_line = ""
+        for line in output.splitlines():
+            if "hypervisorlaunchtype" in line.lower():
+                hyperv_line = line.lower()
+                break
+        if hyperv_line and "auto" in hyperv_line:
+            return _item("Virtualization", "Hyper-V", "Enabled", "suboptimal",
+                         "Hyper-V adds virtualization overhead. Disable if not using VMs/WSL2: dism /online /disable-feature /featurename:Microsoft-Hyper-V-All")
+        elif hyperv_line:
+            return _item("Virtualization", "Hyper-V", "Disabled", "optimal",
+                         "Hyper-V is disabled. No virtualization overhead.")
+        else:
+            return _item("Virtualization", "Hyper-V", "Not configured", "optimal",
+                         "Hyper-V is not configured.")
+    except Exception:
+        return _item("Virtualization", "Hyper-V", "Unknown", "optimal",
+                      "Could not determine Hyper-V status.")
+
+
+def audit_windows_insider():
+    try:
+        insider = read_reg(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\WindowsSelfHost\UI\Selection",
+            "ContentType",
+            default=None
+        )
+        if insider:
+            return _item("Windows", "Windows Insider Program", f"Enrolled: {insider}", "problematic",
+                         "Insider builds may have bugs and instability. Unenroll for stable gaming: Settings > Update > Windows Insider Program.")
+        else:
+            return _item("Windows", "Windows Insider Program", "Not enrolled", "optimal",
+                         "Running stable Windows release.")
+    except Exception:
+        return _item("Windows", "Windows Insider Program", "Not enrolled", "optimal",
+                      "Not enrolled in Windows Insider.")
+
+
+def audit_secure_boot():
+    try:
+        sb = read_reg(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\SecureBoot\State",
+            "UEFISecureBootEnabled",
+            default=None
+        )
+        if sb == 1:
+            return _item("Security", "Secure Boot", "Enabled", "optimal",
+                         "Secure Boot is enabled. Required by many anti-cheat systems (Valorant, FACEIT, etc.).")
+        elif sb == 0:
+            return _item("Security", "Secure Boot", "Disabled", "suboptimal",
+                         "Secure Boot is disabled. Some anti-cheat (Valorant, FACEIT) requires it. Enable in BIOS if needed.")
+        else:
+            return _item("Security", "Secure Boot", "Unknown", "suboptimal",
+                         "Could not determine Secure Boot status. Check BIOS settings.")
+    except Exception:
+        return _item("Security", "Secure Boot", "Unknown", "suboptimal",
+                      "Could not check Secure Boot status.")
+
+
+def audit_xbox_game_bar():
+    try:
+        game_bar = read_reg(
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\GameBar",
+            "UseNexusForGameBarEnabled",
+            default=None
+        )
+        if game_bar == 0:
+            return _item("Windows", "Xbox Game Bar Overlay", "Disabled", "optimal",
+                         "Xbox Game Bar overlay is disabled. No overlay performance impact.")
+        elif game_bar == 1:
+            return _item("Windows", "Xbox Game Bar Overlay", "Enabled", "suboptimal",
+                         "Disable Game Bar overlay: Settings > Gaming > Xbox Game Bar > OFF. Reduces input latency.")
+        else:
+            return _item("Windows", "Xbox Game Bar Overlay", "Default (Enabled)", "suboptimal",
+                         "Xbox Game Bar overlay is likely enabled. Disable: Settings > Gaming > Xbox Game Bar > OFF.")
+    except Exception:
+        return _item("Windows", "Xbox Game Bar Overlay", "Unknown", "suboptimal",
+                      "Could not determine Xbox Game Bar status.")
+
+
+def audit_background_apps():
+    try:
+        bg_apps = read_reg(
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications",
+            "GlobalUserDisabled",
+            default=None
+        )
+        if bg_apps == 1:
+            return _item("Windows", "Background Apps", "Disabled", "optimal",
+                         "Background apps are disabled globally. Reduced overhead.")
+        else:
+            return _item("Windows", "Background Apps", "Enabled (default)", "suboptimal",
+                         "Disable background apps: Settings > Privacy > Background apps > OFF to reduce overhead.")
+    except Exception:
+        return _item("Windows", "Background Apps", "Unknown", "suboptimal",
+                      "Could not check background apps setting.")
+
 
 def run_settings_audit():
     """Phase 4 — audit every relevant setting. Returns list of audit items."""
@@ -483,5 +561,11 @@ def run_settings_audit():
     audit_items.append(audit_timer_resolution())
     audit_items.append(audit_delivery_optimization())
     audit_items.append(audit_shader_cache())
+    audit_items.append(audit_hyper_v())
+    audit_items.append(audit_windows_insider())
+    audit_items.append(audit_secure_boot())
+    audit_items.append(audit_xbox_game_bar())
+    audit_items.append(audit_background_apps())
 
     return audit_items
+

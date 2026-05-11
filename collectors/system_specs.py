@@ -3,8 +3,6 @@
 import subprocess
 import platform
 import socket
-import ctypes
-import os
 import re
 import datetime
 

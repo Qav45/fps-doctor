@@ -345,7 +345,7 @@ def main():
         system_specs = {}
 
     # ── Phase 2: FPS Diagnosis ───────────────────────────────────────────────
-    print_phase(console, 2, "Running FPS Loss Diagnosis (16 sections)")
+    print_phase(console, 2, "Running FPS Loss Diagnosis (23 sections)")
     diagnosis = {}
     try:
         from collectors.fps_diagnosis import run_fps_diagnosis
@@ -360,9 +360,9 @@ def main():
                 console=console,
                 transient=True,
             ) as progress:
-                task = progress.add_task("Running diagnosis...", total=16)
+                task = progress.add_task("Running diagnosis...", total=23)
                 diagnosis = run_fps_diagnosis(system_specs)
-                progress.update(task, completed=12)
+                progress.update(task, completed=23)
         else:
             diagnosis = run_fps_diagnosis(system_specs)
 
