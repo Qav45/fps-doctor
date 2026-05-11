@@ -10,15 +10,15 @@ Windows PC performance diagnostic tool. Identifies FPS-killing processes, bottle
 
 ## Installation
 
-### Option A — Install from the wheel (recommended, no git needed)
+### Option A — Install from the wheel (recommended, no git needed) **(OUTDATED DO NOT USE)**
 
 Download `fps_doctor-1.0.0-py3-none-any.whl` from the [v1.0.0 release](https://github.com/Qav45/fps-doctor/releases/tag/v1.0.0), then:
-
+ **(OUTDATED DO NOT USE)**
 ```
 pip install fps_doctor-1.0.0-py3-none-any.whl
 fps-doctor
 ```
-
+ **(OUTDATED DO NOT USE)**
 That's it. The `fps-doctor` command is now on your PATH.
 
 ### Option B — Clone and run
