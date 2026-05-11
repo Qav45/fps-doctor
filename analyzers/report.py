@@ -170,6 +170,10 @@ def format_diagnosis(diagnosis):
         "directx_runtimes": "2.10 DirectX & Runtimes",
         "bios_firmware": "2.11 BIOS & Firmware",
         "display_issues": "2.12 Display Issues",
+        "startup_programs": "2.13 Startup Programs",
+        "dpc_latency": "2.14 DPC Latency",
+        "problematic_services": "2.15 Problematic Services",
+        "event_log_errors": "2.16 Event Log Errors",
     }
 
     for section_key, section_data in diagnosis.items():
@@ -350,9 +354,9 @@ def format_monitoring(monitoring_data):
             gpu = spike.get("gpu_percent")
             ram = spike.get("ram_percent")
             lines.append(
-                f"  {ts}  CPU:{cpu:.1f if cpu else 'N/A'}%  "
-                f"GPU:{gpu:.1f if gpu else 'N/A'}%  "
-                f"RAM:{ram:.1f if ram else 'N/A'}%"
+                f"  {ts}  CPU:{f'{cpu:.1f}' if cpu is not None else 'N/A'}%  "
+                f"GPU:{f'{gpu:.1f}' if gpu is not None else 'N/A'}%  "
+                f"RAM:{f'{ram:.1f}' if ram is not None else 'N/A'}%"
             )
         if len(spikes) > 20:
             lines.append(f"  ... and {len(spikes) - 20} more spikes")
@@ -448,6 +452,240 @@ def format_recommendations(diagnosis, bottlenecks, settings_audit):
     return "\n".join(lines)
 
 
+_DIAGNOSIS_FIX_MAP = {
+    "power_plan": (
+        "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+        "Switch to High Performance power plan"
+    ),
+    "ssd_trim": (
+        "fsutil behavior set DisableDeleteNotify 0",
+        "Re-enable SSD TRIM"
+    ),
+    "sysmain_service": (
+        "sc config SysMain start= disabled && sc stop SysMain",
+        "Disable SysMain / Superfetch"
+    ),
+    "xbox_game_dvr": (
+        'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR" /v AllowGameDVR /t REG_DWORD /d 0 /f',
+        "Disable Xbox Game DVR"
+    ),
+    "network_throttling_index": (
+        'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f',
+        "Disable network throttling index"
+    ),
+    "delivery_optimization": (
+        'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DeliveryOptimization\\Config" /v DODownloadMode /t REG_DWORD /d 1 /f',
+        "Set Delivery Optimization to LAN-only"
+    ),
+    "pending_reboot": (
+        "shutdown /r /t 0",
+        "Restart PC to apply pending updates"
+    ),
+    "usb_selective_suspend": (
+        "powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 && powercfg /setactive SCHEME_CURRENT",
+        "Disable USB selective suspend"
+    ),
+}
+
+_SETTINGS_FIX_MAP = {
+    "Power Plan": (
+        "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+        "High Performance power plan"
+    ),
+    "Windows Search Indexing": (
+        "sc config WSearch start= disabled && net stop WSearch",
+        "Disable Windows Search indexing"
+    ),
+    "SysMain (Superfetch)": (
+        "sc config SysMain start= disabled && net stop SysMain",
+        "Disable SysMain"
+    ),
+    "Network Throttling Index": (
+        'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f',
+        "Disable network throttling"
+    ),
+    "Xbox Game DVR / Captures": (
+        'reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR" /v AllowGameDVR /t REG_DWORD /d 0 /f',
+        "Disable Game DVR"
+    ),
+    "Delivery Optimization": (
+        'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\DeliveryOptimization\\Config" /v DODownloadMode /t REG_DWORD /d 1 /f',
+        "Delivery Optimization → LAN-only"
+    ),
+    "Processor Max State": (
+        "powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 bc5038f7-23e0-4960-96da-33abaf5935ec 100 && powercfg /setactive SCHEME_CURRENT",
+        "Set processor max state to 100%"
+    ),
+    "USB Selective Suspend": (
+        "powercfg /setacvalueindex SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 && powercfg /setactive SCHEME_CURRENT",
+        "Disable USB selective suspend"
+    ),
+}
+
+
+def format_fix_it_commands(diagnosis, bottlenecks, settings_audit):
+    """List exact commands to fix detected issues."""
+    lines = [_section("FIX-IT COMMANDS")]
+    lines.append("\n  Run these commands in an Administrator Command Prompt to fix detected issues.")
+
+    fix_items = []
+    seen_cmds = set()
+
+    def _add(issue, command, description):
+        key = command[:80]
+        if key not in seen_cmds:
+            seen_cmds.add(key)
+            fix_items.append({"issue": issue, "command": command, "description": description})
+
+    # From diagnosis checks
+    for section_data in diagnosis.values():
+        if not isinstance(section_data, dict):
+            continue
+        for check_name, check_data in section_data.items():
+            if not isinstance(check_data, dict):
+                continue
+            if check_data.get("status") in ("warning", "critical"):
+                info = _DIAGNOSIS_FIX_MAP.get(check_name)
+                if info:
+                    _add(check_name.replace("_", " ").title(), info[0], info[1])
+
+    # From settings audit
+    for item in settings_audit:
+        if item.get("verdict") in ("suboptimal", "problematic"):
+            setting = item.get("setting", "")
+            info = _SETTINGS_FIX_MAP.get(setting)
+            if info:
+                _add(setting, info[0], info[1])
+
+    if not fix_items:
+        lines.append("\n  No automated fix commands available for detected issues.")
+        return "\n".join(lines)
+
+    for i, item in enumerate(fix_items, 1):
+        lines.append(f"\n  [{i:2d}] {item['issue']}")
+        lines.append(f"       Action:  {item['description']}")
+        lines.append(f"       Command: {item['command']}")
+
+    return "\n".join(lines)
+
+
+def compute_health_score(diagnosis, bottlenecks, settings_audit):
+    """Return dict with score (0-100), letter grade, and breakdown counts."""
+    score = 100
+    breakdown = {
+        "criticals": 0, "warnings": 0,
+        "high_bottlenecks": 0, "medium_bottlenecks": 0,
+        "problematic_settings": 0, "suboptimal_settings": 0,
+    }
+
+    for section_data in diagnosis.values():
+        if not isinstance(section_data, dict):
+            continue
+        for check_data in section_data.values():
+            if not isinstance(check_data, dict):
+                continue
+            status = check_data.get("status", "ok")
+            if status == "critical":
+                score -= 10
+                breakdown["criticals"] += 1
+            elif status == "warning":
+                score -= 3
+                breakdown["warnings"] += 1
+
+    for b in bottlenecks:
+        sev = b.get("severity", "low")
+        if sev == "high":
+            score -= 8
+            breakdown["high_bottlenecks"] += 1
+        elif sev == "medium":
+            score -= 3
+            breakdown["medium_bottlenecks"] += 1
+
+    for item in settings_audit:
+        verdict = item.get("verdict", "optimal")
+        if verdict == "problematic":
+            score -= 5
+            breakdown["problematic_settings"] += 1
+        elif verdict == "suboptimal":
+            score -= 2
+            breakdown["suboptimal_settings"] += 1
+
+    score = max(0, min(100, score))
+    if score >= 90:
+        grade = "A"
+    elif score >= 80:
+        grade = "B"
+    elif score >= 70:
+        grade = "C"
+    elif score >= 60:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return {"score": score, "grade": grade, "breakdown": breakdown}
+
+
+def format_health_score(score_data):
+    lines = [_section("PERFORMANCE HEALTH SCORE")]
+    score = score_data.get("score", 0)
+    grade = score_data.get("grade", "?")
+    bd = score_data.get("breakdown", {})
+
+    filled = score // 5
+    bar = "█" * filled + "░" * (20 - filled)
+
+    lines.append(f"\n  Score: {score}/100   Grade: {grade}")
+    lines.append(f"  [{bar}]")
+    lines.append(f"\n  Breakdown:")
+    lines.append(f"    Critical issues:      {bd.get('criticals', 0):>3}  × -10 pts each")
+    lines.append(f"    Warnings:             {bd.get('warnings', 0):>3}  × -3 pts each")
+    lines.append(f"    High bottlenecks:     {bd.get('high_bottlenecks', 0):>3}  × -8 pts each")
+    lines.append(f"    Medium bottlenecks:   {bd.get('medium_bottlenecks', 0):>3}  × -3 pts each")
+    lines.append(f"    Problematic settings: {bd.get('problematic_settings', 0):>3}  × -5 pts each")
+    lines.append(f"    Suboptimal settings:  {bd.get('suboptimal_settings', 0):>3}  × -2 pts each")
+
+    verdict = {
+        "A": "Excellent — system is well optimized for gaming.",
+        "B": "Good — minor issues present. Review warnings.",
+        "C": "Fair — several issues affecting performance. Review recommendations.",
+        "D": "Poor — significant problems detected. Address critical items soon.",
+        "F": "Critical — serious performance problems. Take immediate action.",
+    }.get(grade, "")
+    if verdict:
+        lines.append(f"\n  {verdict}")
+
+    return "\n".join(lines)
+
+
+def generate_json_report(system_specs, diagnosis, bottlenecks, settings_audit, monitoring_data, score_data, output_path):
+    import json
+    data = {
+        "generated": datetime.datetime.now().isoformat(),
+        "tool": TOOL_NAME,
+        "version": VERSION,
+        "health_score": score_data,
+        "system_specs": system_specs,
+        "diagnosis": diagnosis,
+        "bottlenecks": bottlenecks,
+        "settings_audit": settings_audit,
+        "monitoring": {
+            "duration_seconds": monitoring_data.get("duration_seconds", 0),
+            "sample_count": monitoring_data.get("sample_count", 0),
+            "stats": monitoring_data.get("stats", {}),
+            "spikes": monitoring_data.get("spikes", []),
+            "throttle_events": monitoring_data.get("throttle_events", []),
+        },
+    }
+    try:
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+    except Exception:
+        output_path = os.path.join(os.path.expanduser("~"), "fps_doctor_report.json")
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+    return output_path
+
+
 def generate_report(system_specs, diagnosis, bottlenecks, settings_audit, monitoring_data, output_path):
     """Write comprehensive report to output_path."""
     lines = []
@@ -462,12 +700,15 @@ def generate_report(system_specs, diagnosis, bottlenecks, settings_audit, monito
     lines.append(f"  OS:         {system_specs.get('os', {}).get('edition', 'N/A')}")
     lines.append(_line("="))
 
+    score_data = compute_health_score(diagnosis, bottlenecks, settings_audit)
+    lines.append(format_health_score(score_data))
     lines.append(format_system_specs(system_specs))
     lines.append(format_diagnosis(diagnosis))
     lines.append(format_bottlenecks(bottlenecks))
     lines.append(format_settings_audit(settings_audit))
     lines.append(format_monitoring(monitoring_data))
     lines.append(format_recommendations(diagnosis, bottlenecks, settings_audit))
+    lines.append(format_fix_it_commands(diagnosis, bottlenecks, settings_audit))
 
     lines.append("\n")
     lines.append(_line("="))

@@ -199,8 +199,6 @@ def collect_ram(wmi_client):
         else:
             info["channels"] = "Unknown"
 
-    # Try to get total slot count via wmic
-    slot_output = _run(["wmic", "memorychip", "get", "Speed,MemoryType,FormFactor,DataWidth,TotalWidth"], "")
     # Count physical memory array for total slots
     array_rows = wmi_query(
         wmi_client,
@@ -273,10 +271,33 @@ def collect_storage(wmi_client):
             "read_speed_mbps": "N/A",
         }
 
-        # Try to match disk usage
-        for dev_key, usage_data in disk_usage.items():
-            drive["free_gb"] = usage_data.get("free_gb", "N/A")
-            break  # simplified: just take first match
+        # Match this physical disk to its logical partitions via WMI ASSOCIATORS
+        try:
+            import re as _re
+            m = _re.search(r'(\d+)$', drive["device_id"])
+            if m:
+                disk_idx = int(m.group(1))
+                part_rows = wmi_query(
+                    wmi_client,
+                    f"SELECT DeviceID FROM Win32_DiskPartition WHERE DiskIndex={disk_idx}",
+                    ["DeviceID"]
+                )
+                for pr in part_rows:
+                    part_dev = (pr.get("DeviceID") or "").replace("'", "")
+                    ld_rows = wmi_query(
+                        wmi_client,
+                        f"ASSOCIATORS OF {{Win32_DiskPartition.DeviceID='{part_dev}'}} WHERE ResultClass=Win32_LogicalDisk",
+                        ["DeviceID"]
+                    )
+                    for lr in ld_rows:
+                        ld_id = (lr.get("DeviceID") or "").rstrip("\\").upper()
+                        if ld_id in disk_usage:
+                            drive["free_gb"] = disk_usage[ld_id]["free_gb"]
+                            break
+                    if drive["free_gb"] != "N/A":
+                        break
+        except Exception:
+            pass
 
         drives.append(drive)
 

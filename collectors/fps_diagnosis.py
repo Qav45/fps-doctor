@@ -15,7 +15,7 @@ except ImportError:
 
 from utils.wmi_helpers import get_wmi_client, wmi_query
 from utils.registry import read_reg, read_reg_dword, reg_key_exists, list_reg_subkeys, list_reg_values
-from utils.known_issues import FPS_KILLER_PROCESSES, PROBLEMATIC_SERVICES
+from utils.known_issues import FPS_KILLER_PROCESSES, PROBLEMATIC_SERVICES, KNOWN_BAD_DRIVER_VERSIONS, OVERLAY_PROCESSES
 
 
 def _run(cmd, default=""):
@@ -76,6 +76,27 @@ def check_driver_issues(wmi_client):
             results["gpu_driver_age_days"] = _warn("N/A", "No GPU detected via WMI.")
     except Exception:
         results["gpu_driver_age_days"] = _warn("Error", "Could not query GPU driver date.")
+
+    # GPU driver version advisory against known bad versions
+    try:
+        if rows:
+            driver_ver = str(rows[0].get("DriverVersion") or "")
+            gpu_name = str(rows[0].get("Name") or "").lower()
+            advisory = None
+            if "nvidia" in gpu_name or "geforce" in gpu_name:
+                if "526" in driver_ver:
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_526", "")
+                elif "512" in driver_ver:
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_512", "")
+            elif "amd" in gpu_name or "radeon" in gpu_name:
+                if any(v in driver_ver for v in ["22.", "22_"]):
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("amd_notes", "")
+            if advisory:
+                results["gpu_driver_version_advisory"] = _warn(driver_ver, advisory)
+            elif driver_ver and driver_ver != "N/A":
+                results["gpu_driver_version_advisory"] = _ok(driver_ver)
+    except Exception:
+        pass
 
     # Chipset driver version
     try:
@@ -246,6 +267,32 @@ def check_background_processes():
         else:
             results["third_party_antivirus"] = _ok("None detected")
 
+        # Process count by category
+        try:
+            _SYSTEM_PROCS = {"system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+                             "lsass.exe", "services.exe", "svchost.exe", "dwm.exe", "explorer.exe",
+                             "conhost.exe", "audiodg.exe", "ntoskrnl.exe", "registry"}
+            _BROWSER_PROCS = {"chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe",
+                              "vivaldi.exe", "iexplore.exe"}
+            _GAME_CLIENT_PROCS = {"steam.exe", "epicgameslauncher.exe", "battle.net.exe",
+                                  "uplaylaunch.exe", "eadesktop.exe", "riotclientservices.exe", "origin.exe"}
+            counts = {"System": 0, "Browser": 0, "Game Client": 0, "Background": 0}
+            for p in all_procs:
+                n = p["name"].lower()
+                if n in _SYSTEM_PROCS:
+                    counts["System"] += 1
+                elif n in _BROWSER_PROCS:
+                    counts["Browser"] += 1
+                elif n in _GAME_CLIENT_PROCS:
+                    counts["Game Client"] += 1
+                else:
+                    counts["Background"] += 1
+            results["process_categories"] = _ok(
+                f"Sys:{counts['System']}  Browser:{counts['Browser']}  GameClient:{counts['Game Client']}  BG:{counts['Background']}"
+            )
+        except Exception:
+            pass
+
     except Exception as e:
         results["process_check_error"] = _warn(f"Error: {e}", "Could not complete process analysis.")
 
@@ -391,6 +438,20 @@ def check_thermal_power():
     except Exception:
         results["processor_max_state"] = _ok("Could not determine")
 
+    # System uptime warning
+    if PSUTIL_OK:
+        try:
+            uptime_days = (datetime.datetime.now().timestamp() - psutil.boot_time()) / 86400
+            if uptime_days > 7:
+                results["system_uptime"] = _warn(
+                    f"{uptime_days:.1f} days",
+                    f"System has been running {uptime_days:.0f} days without a restart. Reboot to clear memory leaks and apply pending updates."
+                )
+            else:
+                results["system_uptime"] = _ok(f"{uptime_days:.1f} days since last boot")
+        except Exception:
+            pass
+
     return results
 
 
@@ -420,6 +481,26 @@ def check_memory_issues():
     except Exception:
         results["ram_usage"] = _warn("N/A", "Could not read RAM usage.")
 
+    # RAM total capacity grading
+    try:
+        total_gb = psutil.virtual_memory().total / (1024 ** 3)
+        if total_gb < 8:
+            results["ram_total_capacity"] = _crit(
+                f"{total_gb:.1f}GB installed",
+                "Less than 8GB RAM is insufficient for modern games. Many titles require 8-16GB minimum."
+            )
+        elif total_gb < 16:
+            results["ram_total_capacity"] = _warn(
+                f"{total_gb:.1f}GB installed",
+                "8-15GB RAM may cause performance issues in modern titles that require 16GB. Upgrade when possible."
+            )
+        elif total_gb >= 32:
+            results["ram_total_capacity"] = _ok(f"{total_gb:.1f}GB installed (excellent)")
+        else:
+            results["ram_total_capacity"] = _ok(f"{total_gb:.1f}GB installed")
+    except Exception:
+        pass
+
     try:
         swap = psutil.swap_memory()
         if swap.total > 0:
@@ -446,9 +527,9 @@ def check_memory_issues():
             ["TotalPhysicalMemory", "TotalVirtualMemorySize"]
         )
         if os_rows and PSUTIL_OK:
-            reported_kb = int(os_rows[0].get("TotalPhysicalMemory") or 0)
+            reported_bytes = int(os_rows[0].get("TotalPhysicalMemory") or 0)
             actual = psutil.virtual_memory().total
-            diff_gb = (actual - reported_kb * 1024) / (1024 ** 3) if reported_kb > 0 else 0
+            diff_gb = (reported_bytes - actual) / (1024 ** 3) if reported_bytes > 0 else 0
             if diff_gb > 0.5:
                 results["hardware_reserved_memory"] = _warn(
                     f"~{diff_gb:.1f}GB reserved",
@@ -463,6 +544,47 @@ def check_memory_issues():
 
 
 # ─── 2.5 Storage Issues ─────────────────────────────────────────────────────
+
+def _disk_io_benchmark():
+    """16MB sequential read/write benchmark. Returns (read_mbps, write_mbps) or (None, None)."""
+    import tempfile, time as _time
+    block_size = 4 * 1024 * 1024  # 4MB
+    num_blocks = 4  # 16MB total
+    total_mb = block_size * num_blocks / (1024 * 1024)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as f:
+            tmp_path = f.name
+            block = b"\x00" * block_size
+            t0 = _time.time()
+            for _ in range(num_blocks):
+                f.write(block)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        write_time = _time.time() - t0
+
+        t0 = _time.time()
+        with open(tmp_path, "rb") as f:
+            while f.read(block_size):
+                pass
+        read_time = _time.time() - t0
+
+        os.unlink(tmp_path)
+        return (
+            round(total_mb / read_time, 1) if read_time > 0 else None,
+            round(total_mb / write_time, 1) if write_time > 0 else None,
+        )
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        return None, None
+
 
 def check_storage_issues():
     results = {}
@@ -492,6 +614,22 @@ def check_storage_issues():
         except Exception:
             results["disk_space_error"] = _warn("Error", "Could not check disk space.")
 
+    # Quick disk I/O benchmark
+    try:
+        read_mbps, write_mbps = _disk_io_benchmark()
+        if read_mbps is not None and write_mbps is not None:
+            if read_mbps < 100:
+                results["disk_sequential_read"] = _warn(
+                    f"{read_mbps} MB/s",
+                    "Very slow sequential read speed. Expected: HDD ~100+ MB/s, SATA SSD ~500+ MB/s, NVMe ~1000+ MB/s."
+                )
+            else:
+                results["disk_sequential_read"] = _ok(f"{read_mbps} MB/s read, {write_mbps} MB/s write")
+        else:
+            results["disk_sequential_read"] = _ok("Could not benchmark (temp file error)")
+    except Exception:
+        pass
+
     # SSD TRIM status
     try:
         trim_output = _run(["fsutil", "behavior", "query", "DisableDeleteNotify"], "")
@@ -506,6 +644,19 @@ def check_storage_issues():
             results["ssd_trim"] = _ok("Could not determine")
     except Exception:
         results["ssd_trim"] = _ok("Could not determine")
+
+    # BitLocker detection
+    try:
+        bde_out = _run(["manage-bde", "-status"], "")
+        if bde_out and "Protection On" in bde_out:
+            results["bitlocker"] = _warn(
+                "Enabled on one or more drives",
+                "BitLocker encryption adds I/O overhead. Consider disabling on game drives (HDDs/older SSDs) for better load times."
+            )
+        elif bde_out:
+            results["bitlocker"] = _ok("Not active")
+    except Exception:
+        pass
 
     # Storage controller mode
     try:
@@ -638,23 +789,17 @@ def check_software_overlays():
     except Exception:
         pass
 
-    # Check known overlay apps
-    overlay_checks = {
-        "discord": "discord.exe",
-        "steam_overlay": "steamwebhelper.exe",
-        "geforce_experience": "gfexperienceservice.exe",
-        "xbox_game_bar": "gamebar.exe",
-        "obs": "obs64.exe",
-        "browser_overlays": "chrome.exe",
-    }
-    for label, proc_name in overlay_checks.items():
-        if proc_name.lower() in running_procs:
-            results[label] = _warn(
-                f"Running ({running_procs[proc_name.lower()]})",
-                f"Disable in-game overlay for {label.replace('_', ' ')} while gaming for better performance."
-            )
-        else:
-            results[label] = _ok("Not running")
+    # Check against full OVERLAY_PROCESSES list
+    found_overlays = [name for name in OVERLAY_PROCESSES if name.lower() in running_procs]
+    if found_overlays:
+        preview = ", ".join(found_overlays[:5])
+        suffix = f"... (+{len(found_overlays) - 5} more)" if len(found_overlays) > 5 else ""
+        results["overlay_processes"] = _warn(
+            f"Running: {preview}{suffix}",
+            f"Overlay/injection processes active. Disable in-game overlays while gaming: {', '.join(found_overlays[:3])}."
+        )
+    else:
+        results["overlay_processes"] = _ok("No known overlay processes running")
 
     # Xbox Game DVR
     try:
@@ -871,11 +1016,16 @@ def check_windows_settings():
     except Exception:
         results["memory_integrity_hvci"] = _ok("Unknown")
 
-    # Hyper-V
+    # Hyper-V — parse only the hypervisorlaunchtype line to avoid false positives
     try:
         hyperv_output = _run(["bcdedit", "/enum"], "")
-        if "hypervisorlaunchtype" in hyperv_output.lower():
-            if "auto" in hyperv_output.lower():
+        hyperv_line = ""
+        for line in hyperv_output.splitlines():
+            if "hypervisorlaunchtype" in line.lower():
+                hyperv_line = line.lower()
+                break
+        if hyperv_line:
+            if "auto" in hyperv_line:
                 results["hyper_v"] = _warn(
                     "Enabled",
                     "Hyper-V virtualization can add latency and reduce gaming performance. Disable if not needed."
@@ -904,6 +1054,118 @@ def check_windows_settings():
             results["windows_insider"] = _ok("Not enrolled")
     except Exception:
         results["windows_insider"] = _ok("Not enrolled")
+
+    # Timer resolution
+    try:
+        import ctypes
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        minimum = ctypes.c_ulong()
+        maximum = ctypes.c_ulong()
+        current = ctypes.c_ulong()
+        ntdll.NtQueryTimerResolution(ctypes.byref(minimum), ctypes.byref(maximum), ctypes.byref(current))
+        current_ms = current.value / 10000
+        if current_ms > 5.0:
+            results["timer_resolution"] = _warn(
+                f"{current_ms:.1f}ms (default 15.6ms)",
+                "System timer is at default 15.6ms resolution. Games set it to 1ms automatically; if stuttering occurs, use TimerResolution tool."
+            )
+        else:
+            results["timer_resolution"] = _ok(f"{current_ms:.1f}ms (high-res active)")
+    except Exception:
+        pass
+
+    # Delivery Optimization
+    try:
+        do_mode = read_reg(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config",
+            "DODownloadMode",
+            default=None
+        )
+        if do_mode in (3, 100):
+            results["delivery_optimization"] = _warn(
+                f"Mode={do_mode} (internet sharing)",
+                "Windows is using your bandwidth to share updates with other PCs on the internet. Set to LAN-only in Settings > Windows Update > Advanced > Delivery Optimization."
+            )
+        elif do_mode == 0:
+            results["delivery_optimization"] = _ok("Disabled")
+        elif do_mode == 1:
+            results["delivery_optimization"] = _ok("LAN-only")
+        else:
+            results["delivery_optimization"] = _ok(f"Mode={do_mode}")
+    except Exception:
+        pass
+
+    # Shader Cache (D3DSCache directory as proxy)
+    try:
+        d3d_cache_path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "D3DSCache")
+        if os.path.isdir(d3d_cache_path):
+            results["shader_cache"] = _ok("DirectX shader cache active (D3DSCache present)")
+        else:
+            results["shader_cache"] = _warn(
+                "D3DSCache folder absent",
+                "DirectX shader cache may be disabled or unused. Shader caching prevents first-encounter stutter."
+            )
+    except Exception:
+        pass
+
+    # Pending Reboot
+    try:
+        pending = False
+        pending_keys = [
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"),
+        ]
+        for hive, key in pending_keys:
+            if reg_key_exists(hive, key):
+                pending = True
+                break
+        if not pending:
+            pfro = read_reg(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager",
+                "PendingFileRenameOperations",
+                default=None
+            )
+            if pfro:
+                pending = True
+        if pending:
+            results["pending_reboot"] = _warn(
+                "Reboot pending",
+                "Windows is waiting for a reboot to finish updates. Pending reboots can degrade performance. Restart your PC."
+            )
+        else:
+            results["pending_reboot"] = _ok("No pending reboot")
+    except Exception:
+        pass
+
+    # Scheduled Tasks — check for known heavy tasks
+    try:
+        heavy_tasks = [
+            ("\\Microsoft\\Windows\\Defrag\\ScheduledDefrag", "Disk Defragmentation"),
+            ("\\Microsoft\\Windows\\Application Experience\\ProgramDataUpdater", "App Compat Telemetry"),
+            ("\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator", "CEIP Consolidator"),
+            ("\\Microsoft\\Windows\\WindowsUpdate\\Automatic App Update", "Windows Store Auto Update"),
+        ]
+        active_heavy = []
+        for task_path, task_name in heavy_tasks:
+            out = _run(["schtasks", "/query", "/tn", task_path, "/fo", "LIST"], "")
+            if out and "Status:" in out:
+                for line in out.split("\n"):
+                    if "Status:" in line and "Disabled" not in line and "Ready" in line:
+                        active_heavy.append(task_name)
+                        break
+        if active_heavy:
+            results["scheduled_tasks"] = _warn(
+                f"Active: {', '.join(active_heavy)}",
+                "Heavy scheduled tasks are enabled. They may fire during gameplay. Review in Task Scheduler."
+            )
+        else:
+            results["scheduled_tasks"] = _ok("No problematic scheduled tasks found")
+    except Exception:
+        pass
 
     return results
 
@@ -1196,6 +1458,212 @@ def check_display_issues(wmi_client):
         "Enable G-Sync or FreeSync in GPU control panel and monitor OSD for tear-free gaming."
     )
 
+    # DPI scaling check
+    try:
+        import ctypes
+        dpi = ctypes.windll.user32.GetDpiForSystem()
+        scaling_pct = round(dpi / 96 * 100)
+        if scaling_pct > 100:
+            results["dpi_scaling"] = _warn(
+                f"{scaling_pct}% scaling",
+                f"Display scaling is {scaling_pct}%. Values above 100% can affect game rendering. Set to 100% in Display Settings > Scale if games look wrong."
+            )
+        else:
+            results["dpi_scaling"] = _ok(f"{scaling_pct}% (100% recommended)")
+    except Exception:
+        pass
+
+    return results
+
+
+# ─── 2.13 Startup Programs ──────────────────────────────────────────────────
+
+def check_startup_programs():
+    results = {}
+
+    startup_entries = []
+    run_paths = [
+        (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
+    ]
+    for hive, path in run_paths:
+        try:
+            values = list_reg_values(hive, path)
+            for name, value in values.items():
+                startup_entries.append({"name": name, "command": str(value)})
+        except Exception:
+            pass
+
+    try:
+        startup_folder = os.path.join(
+            os.environ.get("APPDATA", ""),
+            r"Microsoft\Windows\Start Menu\Programs\Startup"
+        )
+        if os.path.isdir(startup_folder):
+            for f in os.listdir(startup_folder):
+                if not f.startswith("."):
+                    startup_entries.append({"name": f, "command": f"Startup folder: {f}"})
+    except Exception:
+        pass
+
+    fps_killers_in_startup = []
+    for entry in startup_entries:
+        cmd = entry["command"].lower()
+        for killer_proc in FPS_KILLER_PROCESSES:
+            if killer_proc.lower() in cmd:
+                fps_killers_in_startup.append(entry["name"])
+                break
+
+    total = len(startup_entries)
+    if total > 20:
+        results["startup_count"] = _warn(
+            f"{total} programs",
+            "Excessive startup programs. Open Task Manager > Startup and disable non-essential entries."
+        )
+    elif total > 10:
+        results["startup_count"] = _warn(
+            f"{total} programs",
+            "Many startup programs detected. Disable unnecessary entries to reduce boot time and background overhead."
+        )
+    else:
+        results["startup_count"] = _ok(f"{total} programs")
+
+    if fps_killers_in_startup:
+        results["fps_killers_in_startup"] = _warn(
+            f"Found: {', '.join(fps_killers_in_startup[:3])}",
+            "Known FPS-impacting programs auto-start on boot. Disable them in Task Manager > Startup tab."
+        )
+    else:
+        results["fps_killers_in_startup"] = _ok("None detected")
+
+    return results
+
+
+# ─── 2.14 DPC Latency ───────────────────────────────────────────────────────
+
+def check_dpc_latency():
+    results = {}
+    try:
+        wmi_client = get_wmi_client()
+        rows1 = wmi_query(
+            wmi_client,
+            "SELECT DPCsQueuedPersec FROM Win32_PerfRawData_PerfOS_Processor WHERE Name='_Total'",
+            ["DPCsQueuedPersec"]
+        )
+        import time as _time
+        t1 = _time.time()
+        _time.sleep(1)
+        rows2 = wmi_query(
+            wmi_client,
+            "SELECT DPCsQueuedPersec FROM Win32_PerfRawData_PerfOS_Processor WHERE Name='_Total'",
+            ["DPCsQueuedPersec"]
+        )
+        elapsed = _time.time() - t1
+
+        if rows1 and rows2 and elapsed > 0:
+            d1 = int(rows1[0].get("DPCsQueuedPersec") or 0)
+            d2 = int(rows2[0].get("DPCsQueuedPersec") or 0)
+            dpc_rate = max(0, d2 - d1) / elapsed
+            if dpc_rate > 10000:
+                results["dpc_rate"] = _warn(
+                    f"{dpc_rate:.0f} DPCs/sec",
+                    "High DPC interrupt rate. This causes audio glitches and micro-stutters. Use LatencyMon to identify the offending driver."
+                )
+            else:
+                results["dpc_rate"] = _ok(f"{dpc_rate:.0f} DPCs/sec")
+        else:
+            results["dpc_rate"] = _ok("Could not measure")
+    except Exception:
+        results["dpc_rate"] = _ok("Could not measure DPC rate")
+    return results
+
+
+# ─── 2.15 Problematic Services ──────────────────────────────────────────────
+
+def check_problematic_services():
+    results = {}
+    try:
+        wmi_client = get_wmi_client()
+        svc_rows = wmi_query(
+            wmi_client,
+            "SELECT Name FROM Win32_Service WHERE State='Running'",
+            ["Name"]
+        )
+        running_names = {(r.get("Name") or "").strip() for r in svc_rows}
+        found = [(name, desc) for name, desc in PROBLEMATIC_SERVICES.items() if name in running_names]
+        if found:
+            preview = ", ".join(s[0] for s in found[:4])
+            suffix = f"... (+{len(found) - 4} more)" if len(found) > 4 else ""
+            results["problematic_services"] = _warn(
+                f"{len(found)} found: {preview}{suffix}",
+                "Services impacting performance: " + "; ".join(
+                    f"{s[0]}" for s in found[:3]
+                ) + ". Disable unneeded ones via services.msc."
+            )
+        else:
+            results["problematic_services"] = _ok("No known problematic services running")
+    except Exception:
+        results["problematic_services"] = _warn("Could not enumerate", "WMI service query failed.")
+    return results
+
+
+# ─── 2.16 Windows Event Log Errors ──────────────────────────────────────────
+
+def check_event_log_errors():
+    results = {}
+
+    # WHEA hardware errors (IDs 17-20)
+    try:
+        whea_out = _run([
+            "wevtutil", "qe", "System",
+            "/q:*[System[Provider[@Name='Microsoft-Windows-WHEA-Logger'] and (EventID>=17 and EventID<=20)]]",
+            "/c:5", "/rd:true", "/f:text"
+        ], "")
+        if whea_out and "Event[" in whea_out:
+            results["whea_hardware_errors"] = _crit(
+                "WHEA errors in event log",
+                "Hardware errors detected. This indicates faulty RAM, CPU, or motherboard. Run mdsched.exe (Windows Memory Diagnostic)."
+            )
+        else:
+            results["whea_hardware_errors"] = _ok("No recent WHEA hardware errors")
+    except Exception:
+        results["whea_hardware_errors"] = _ok("Could not query event log")
+
+    # Display driver crashes (Event ID 4101 — nvlddmkm/atikmpag)
+    try:
+        dd_out = _run([
+            "wevtutil", "qe", "System",
+            "/q:*[System[Provider[@Name='Display'] and EventID=4101]]",
+            "/c:5", "/rd:true", "/f:text"
+        ], "")
+        if dd_out and "Event[" in dd_out:
+            results["display_driver_crashes"] = _warn(
+                "GPU driver crashes in event log",
+                "GPU driver has crashed recently (nvlddmkm/atikmpag). Update GPU drivers or check GPU temperatures and stability."
+            )
+        else:
+            results["display_driver_crashes"] = _ok("No recent display driver crashes")
+    except Exception:
+        results["display_driver_crashes"] = _ok("Could not query event log")
+
+    # Kernel power events (Event ID 41 — unexpected shutdown)
+    try:
+        kp_out = _run([
+            "wevtutil", "qe", "System",
+            "/q:*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=41]]",
+            "/c:5", "/rd:true", "/f:text"
+        ], "")
+        if kp_out and "Event[" in kp_out:
+            results["kernel_power_events"] = _warn(
+                "Unexpected shutdown events detected",
+                "System experienced unexpected shutdowns/restarts (Event ID 41). Check PSU, overclocking stability, and temperatures."
+            )
+        else:
+            results["kernel_power_events"] = _ok("No recent unexpected shutdown events")
+    except Exception:
+        results["kernel_power_events"] = _ok("Could not query event log")
+
     return results
 
 
@@ -1218,6 +1686,10 @@ def run_fps_diagnosis(system_specs=None):
         "directx_runtimes": check_directx_runtimes(),
         "bios_firmware": check_bios_firmware(wmi_client, system_specs),
         "display_issues": check_display_issues(wmi_client),
+        "startup_programs": check_startup_programs(),
+        "dpc_latency": check_dpc_latency(),
+        "problematic_services": check_problematic_services(),
+        "event_log_errors": check_event_log_errors(),
     }
 
     return diagnosis

@@ -139,7 +139,7 @@ def analyze_bottlenecks(system_specs, live_sample=None):
         elif cpu_pct > 75 and (gpu_pct is None or gpu_pct < 70):
             findings.append(_finding(
                 "CPU Bottleneck", "medium",
-                f"CPU usage at {cpu_pct:.1f}% with GPU at {gpu_pct:.1f() if gpu_pct else 'N/A'}%. Some CPU pressure detected.",
+                f"CPU usage at {cpu_pct:.1f}% with GPU at {f'{gpu_pct:.1f}' if gpu_pct is not None else 'N/A'}%. Some CPU pressure detected.",
                 "Close background applications, disable CPU-intensive overlays, ensure High Performance power plan."
             ))
     elif cpu_pct is not None and cpu_pct > 90:

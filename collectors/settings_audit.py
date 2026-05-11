@@ -397,6 +397,68 @@ def audit_notifications():
                      "Enable Focus Assist while gaming: Settings > System > Focus Assist.")
 
 
+def audit_timer_resolution():
+    try:
+        import ctypes
+        ntdll = ctypes.WinDLL("ntdll.dll")
+        minimum = ctypes.c_ulong()
+        maximum = ctypes.c_ulong()
+        current = ctypes.c_ulong()
+        ntdll.NtQueryTimerResolution(ctypes.byref(minimum), ctypes.byref(maximum), ctypes.byref(current))
+        current_ms = current.value / 10000
+        if current_ms > 5.0:
+            return _item("System", "Timer Resolution", f"{current_ms:.1f}ms", "suboptimal",
+                         "System timer at default 15.6ms. Games set 1ms automatically; use TimerResolution tool if not.")
+        else:
+            return _item("System", "Timer Resolution", f"{current_ms:.1f}ms", "optimal",
+                         "High-resolution timer is active (1ms range).")
+    except Exception:
+        return _item("System", "Timer Resolution", "Unknown", "suboptimal",
+                     "Could not query timer resolution.")
+
+
+def audit_delivery_optimization():
+    try:
+        import winreg
+        from utils.registry import read_reg
+        do_mode = read_reg(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config",
+            "DODownloadMode",
+            default=None
+        )
+        if do_mode in (3, 100):
+            return _item("Network", "Delivery Optimization", f"Mode={do_mode} (internet)", "problematic",
+                         "Windows shares updates over internet. Set to LAN-only: Settings > Windows Update > Advanced > Delivery Optimization.")
+        elif do_mode == 0:
+            return _item("Network", "Delivery Optimization", "Disabled", "optimal",
+                         "Delivery Optimization is disabled.")
+        elif do_mode == 1:
+            return _item("Network", "Delivery Optimization", "LAN-only", "optimal",
+                         "Delivery Optimization is LAN-only (no internet bandwidth used).")
+        else:
+            return _item("Network", "Delivery Optimization", f"Mode={do_mode}", "suboptimal",
+                         "Set Delivery Optimization to LAN-only or disabled to avoid bandwidth sharing.")
+    except Exception:
+        return _item("Network", "Delivery Optimization", "Unknown", "suboptimal",
+                     "Could not read Delivery Optimization setting.")
+
+
+def audit_shader_cache():
+    import os
+    try:
+        d3d_path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "D3DSCache")
+        if os.path.isdir(d3d_path):
+            return _item("GPU", "DirectX Shader Cache", "Active (D3DSCache present)", "optimal",
+                         "DirectX shader caching is enabled. Prevents first-encounter shader stutter.")
+        else:
+            return _item("GPU", "DirectX Shader Cache", "Cache folder absent", "suboptimal",
+                         "D3DSCache folder not found. Shader caching may be disabled or GPU may not use D3D shader cache.")
+    except Exception:
+        return _item("GPU", "DirectX Shader Cache", "Unknown", "suboptimal",
+                     "Could not check shader cache status.")
+
+
 def run_settings_audit():
     """Phase 4 — audit every relevant setting. Returns list of audit items."""
     audit_items = []
@@ -418,5 +480,8 @@ def run_settings_audit():
     audit_items.append(audit_usb_selective_suspend())
     audit_items.append(audit_fullscreen_optimizations())
     audit_items.append(audit_notifications())
+    audit_items.append(audit_timer_resolution())
+    audit_items.append(audit_delivery_optimization())
+    audit_items.append(audit_shader_cache())
 
     return audit_items

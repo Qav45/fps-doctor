@@ -290,6 +290,11 @@ def parse_args():
         action="store_true",
         help="Skip the live monitoring phase"
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Also export a structured JSON report alongside the text report"
+    )
     return parser.parse_args()
 
 
@@ -438,7 +443,7 @@ def main():
         output_path = os.path.join(script_dir, f"fps_doctor_report_{timestamp}.txt")
 
     try:
-        from analyzers.report import generate_report
+        from analyzers.report import generate_report, compute_health_score, generate_json_report
         final_path = run_phase_with_spinner(
             console, "Writing report...",
             generate_report,
@@ -446,15 +451,39 @@ def main():
         )
         print_phase(console, 6, "Report Generated", "done")
 
+        score_data = compute_health_score(diagnosis, bottlenecks, settings_audit)
+
         if RICH_OK:
             console.print()
+            grade = score_data.get("grade", "?")
+            score = score_data.get("score", 0)
+            grade_color = {"A": "green", "B": "bright_green", "C": "yellow", "D": "orange3", "F": "red"}.get(grade, "white")
             console.print(Panel(
+                f"[bold {grade_color}]Health Score: {score}/100  Grade: {grade}[/bold {grade_color}]\n"
                 f"[bold green]Report saved to:[/bold green]\n[white]{final_path}[/white]",
                 border_style="green",
                 title="[bold]Output",
             ))
         else:
-            console.print(f"\n  Report saved to: {final_path}")
+            score = score_data.get("score", 0)
+            grade = score_data.get("grade", "?")
+            console.print(f"\n  Health Score: {score}/100  Grade: {grade}")
+            console.print(f"  Report saved to: {final_path}")
+
+        if args.json:
+            json_path = output_path.replace(".txt", ".json")
+            try:
+                json_final_path = run_phase_with_spinner(
+                    console, "Writing JSON report...",
+                    generate_json_report,
+                    system_specs, diagnosis, bottlenecks, settings_audit, monitoring_data, score_data, json_path
+                )
+                if RICH_OK:
+                    console.print(f"  [dim]JSON report: {json_final_path}[/dim]")
+                else:
+                    console.print(f"  JSON report: {json_final_path}")
+            except Exception as e:
+                console.print(f"  [yellow]JSON export failed: {e}[/yellow]" if RICH_OK else f"  JSON export failed: {e}")
 
     except Exception as e:
         console.print(f"  [red]Phase 6 error: {e}[/red]" if RICH_OK else f"  Phase 6 error: {e}")
