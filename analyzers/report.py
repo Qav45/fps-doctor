@@ -177,6 +177,13 @@ def format_diagnosis(diagnosis):
         "dpc_latency": "2.14 DPC Latency",
         "problematic_services": "2.15 Problematic Services",
         "event_log_errors": "2.16 Event Log Errors",
+        "deep_driver_analysis": "2.17 Deep Driver Analysis",
+        "irq_analysis": "2.18 IRQ & Interrupt Analysis",
+        "windows_update_status": "2.19 Windows Update & Patch Status",
+        "virtual_memory_config": "2.20 Virtual Memory & Pagefile Config",
+        "audio_subsystem": "2.21 Audio Subsystem Issues",
+        "crash_stability": "2.22 Crash & Stability History",
+        "background_network": "2.23 Background Network Activity",
     }
 
     for section_key, section_data in diagnosis.items():
@@ -723,7 +730,7 @@ def generate_report(system_specs, diagnosis, bottlenecks, settings_audit, monito
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(report_text)
-    except Exception as e:
+    except Exception:
         # Try fallback path
         fallback = os.path.join(os.path.expanduser("~"), "fps_doctor_report.txt")
         with open(fallback, "w", encoding="utf-8") as f:

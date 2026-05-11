@@ -21,7 +21,6 @@ try:
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
-    from rich.text import Text
     RICH_OK = True
 except ImportError:
     RICH_OK = False

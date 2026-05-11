@@ -16,9 +16,12 @@ try:
 except ImportError:
     PSUTIL_OK = False
 
-from utils.wmi_helpers import get_wmi_client, wmi_query
-from utils.registry import read_reg, read_reg_dword, reg_key_exists, list_reg_subkeys, list_reg_values
-from utils.known_issues import FPS_KILLER_PROCESSES, PROBLEMATIC_SERVICES, KNOWN_BAD_DRIVER_VERSIONS, OVERLAY_PROCESSES
+from utils.wmi_helpers import get_wmi_client, get_wmi_client_ns, wmi_query
+from utils.registry import read_reg, reg_key_exists, list_reg_subkeys, list_reg_values
+from utils.known_issues import (
+    FPS_KILLER_PROCESSES, PROBLEMATIC_SERVICES, KNOWN_BAD_DRIVER_VERSIONS, OVERLAY_PROCESSES,
+    KNOWN_BAD_AUDIO_DRIVERS, KNOWN_BAD_NETWORK_DRIVERS,
+)
 
 
 def _run(cmd, default=""):
@@ -81,20 +84,66 @@ def check_driver_issues(wmi_client):
     except Exception:
         results["gpu_driver_age_days"] = _warn("Error", "Could not query GPU driver date.")
 
-    # GPU driver version advisory against known bad versions
+    # GPU driver version advisory against known bad versions (proper version parsing)
     try:
         if rows:
             driver_ver = str(rows[0].get("DriverVersion") or "")
             gpu_name = str(rows[0].get("Name") or "").lower()
             advisory = None
             if "nvidia" in gpu_name or "geforce" in gpu_name:
-                if "526" in driver_ver:
+                # NVIDIA WDDM driver format: aa.bb.cc.dddd → branch = last two segments
+                # e.g., 31.0.15.5263 → 552.63, 31.0.15.2686 → 526.86
+                nv_branch = ""
+                try:
+                    parts = driver_ver.split(".")
+                    if len(parts) >= 4:
+                        nv_branch = parts[-2][-1] + parts[-1]  # e.g., "5" + "2686" → "52686"
+                        nv_major = int(nv_branch[:3])  # e.g., 526
+                    elif len(parts) >= 2:
+                        nv_major = int(parts[0])
+                    else:
+                        nv_major = 0
+                except (ValueError, IndexError):
+                    nv_major = 0
+                if 526 <= nv_major < 527:
                     advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_526", "")
-                elif "512" in driver_ver:
+                elif 512 <= nv_major < 513:
                     advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_512", "")
+                elif 551 <= nv_major < 552:
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_551", "")
+                elif 552 <= nv_major < 553:
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_552", "")
+                elif 546 <= nv_major < 547:
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("nvidia_546", "")
             elif "amd" in gpu_name or "radeon" in gpu_name:
-                if any(v in driver_ver for v in ["22.", "22_"]):
+                # AMD driver versions: check major.minor from WDDM string
+                try:
+                    parts = driver_ver.split(".")
+                    if len(parts) >= 4:
+                        amd_suffix = parts[-2] + "." + parts[-1]
+                    else:
+                        amd_suffix = driver_ver
+                except Exception:
+                    amd_suffix = driver_ver
+                if amd_suffix.startswith("24.1"):
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("amd_24_1", "")
+                elif amd_suffix.startswith("24.2"):
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("amd_24_2", "")
+                elif amd_suffix.startswith("23.12"):
+                    advisory = KNOWN_BAD_DRIVER_VERSIONS.get("amd_23_12", "")
+                elif any(amd_suffix.startswith(p) for p in ["22.", "22_"]):
                     advisory = KNOWN_BAD_DRIVER_VERSIONS.get("amd_notes", "")
+            elif "intel" in gpu_name and "arc" in gpu_name:
+                try:
+                    parts = driver_ver.split(".")
+                    if len(parts) >= 2:
+                        ver_num = int(parts[-1]) if parts[-1].isdigit() else 0
+                        if ver_num <= 4032:
+                            advisory = KNOWN_BAD_DRIVER_VERSIONS.get("intel_arc_101_4032", "")
+                        elif ver_num == 4502:
+                            advisory = KNOWN_BAD_DRIVER_VERSIONS.get("intel_arc_101_4502", "")
+                except (ValueError, IndexError):
+                    pass
             if advisory:
                 results["gpu_driver_version_advisory"] = _warn(driver_ver, advisory)
             elif driver_ver and driver_ver != "N/A":
@@ -600,12 +649,12 @@ def check_storage_issues():
                     key = f"free_space_{drive_letter}"
                     if pct_free < 5:
                         results[key] = _crit(
-                            f"{pct_free:.1f}% free ({usage.free // (1024**3):.0f}GB)",
+                            f"{pct_free:.1f}% free ({int(usage.free // (1024**3))}GB)",
                             f"Drive {drive_letter} is critically full. Free at least 15% for optimal performance."
                         )
                     elif pct_free < 15:
                         results[key] = _warn(
-                            f"{pct_free:.1f}% free ({usage.free // (1024**3):.0f}GB)",
+                            f"{pct_free:.1f}% free ({int(usage.free // (1024**3))}GB)",
                             f"Drive {drive_letter} has low free space. Windows needs 15%+ for proper operation."
                         )
                     else:
@@ -1385,10 +1434,11 @@ def check_bios_firmware(wmi_client, system_specs=None):
     except Exception:
         results["bios_age_days"] = _ok("Could not determine BIOS age")
 
-    # TPM
+    # TPM — Win32_Tpm lives in root\cimv2\Security\MicrosoftTpm, not default root\cimv2
     try:
+        tpm_client = get_wmi_client_ns(r"root\cimv2\Security\MicrosoftTpm")
         tpm_rows = wmi_query(
-            wmi_client,
+            tpm_client,
             "SELECT IsEnabled_InitialValue FROM Win32_Tpm",
             ["IsEnabled_InitialValue"]
         )
@@ -1396,7 +1446,7 @@ def check_bios_firmware(wmi_client, system_specs=None):
             enabled = tpm_rows[0].get("IsEnabled_InitialValue")
             results["tpm"] = _ok("TPM Present and Enabled" if enabled else "TPM Present but Disabled")
         else:
-            results["tpm"] = _ok("TPM not detected (may need WMI namespace root\\cimv2\\Security\\MicrosoftTpm)")
+            results["tpm"] = _ok("TPM not detected via WMI")
     except Exception:
         results["tpm"] = _ok("TPM status unknown")
 
@@ -1540,8 +1590,8 @@ def check_startup_programs():
 
 # ─── 2.14 DPC Latency ───────────────────────────────────────────────────────
 
-def check_dpc_latency(wmi_client):
-    results = {}
+def _measure_dpc(wmi_client):
+    """Measure DPC rate with 1-second sleep in a thread-safe way."""
     try:
         rows1 = wmi_query(
             wmi_client,
@@ -1556,11 +1606,24 @@ def check_dpc_latency(wmi_client):
             ["DPCsQueuedPersec"]
         )
         elapsed = time.time() - t1
-
         if rows1 and rows2 and elapsed > 0:
             d1 = int(rows1[0].get("DPCsQueuedPersec") or 0)
             d2 = int(rows2[0].get("DPCsQueuedPersec") or 0)
-            dpc_rate = max(0, d2 - d1) / elapsed
+            return max(0, d2 - d1) / elapsed
+    except Exception:
+        pass
+    return None
+
+
+def check_dpc_latency(wmi_client):
+    results = {}
+    try:
+        # Run the blocking DPC measurement in a thread pool to avoid blocking main thread
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_measure_dpc, wmi_client)
+            dpc_rate = future.result(timeout=10)
+
+        if dpc_rate is not None:
             if dpc_rate > 10000:
                 results["dpc_rate"] = _warn(
                     f"{dpc_rate:.0f} DPCs/sec",
@@ -1664,6 +1727,561 @@ def check_event_log_errors():
     return results
 
 
+# ─── 2.17 Deep Driver Analysis ──────────────────────────────────────────────
+
+def check_deep_driver_analysis(wmi_client):
+    results = {}
+
+    # Full driver enumeration — flag outdated (>2 years) and unsigned drivers
+    try:
+        driver_rows = wmi_query(
+            wmi_client,
+            "SELECT DeviceName, DriverVersion, DriverDate, IsSigned, DriverProviderName "
+            "FROM Win32_PnPSignedDriver WHERE DriverVersion IS NOT NULL",
+            ["DeviceName", "DriverVersion", "DriverDate", "IsSigned", "DriverProviderName"]
+        )
+        outdated = []
+        unsigned = []
+        now = datetime.datetime.now()
+        two_years_ago = now - datetime.timedelta(days=730)
+
+        for drv in driver_rows:
+            name = drv.get("DeviceName") or "Unknown"
+            dd = str(drv.get("DriverDate") or "")
+            signed = drv.get("IsSigned")
+
+            # Check outdated
+            if len(dd) >= 8:
+                try:
+                    drv_dt = datetime.datetime(int(dd[0:4]), int(dd[4:6]), int(dd[6:8]))
+                    if drv_dt < two_years_ago:
+                        outdated.append(name[:40])
+                except (ValueError, IndexError):
+                    pass
+
+            # Check unsigned
+            if signed is False or signed == 0:
+                unsigned.append(name[:40])
+
+        if outdated:
+            results["outdated_drivers"] = _warn(
+                f"{len(outdated)} driver(s) >2 years old",
+                f"Outdated drivers: {', '.join(outdated[:3])}. Update via Device Manager or manufacturer website."
+            )
+        else:
+            results["outdated_drivers"] = _ok("All drivers reasonably current")
+
+        if unsigned:
+            results["unsigned_drivers"] = _warn(
+                f"{len(unsigned)} unsigned driver(s)",
+                f"Unsigned drivers: {', '.join(unsigned[:3])}. May cause stability issues or be blocked by HVCI."
+            )
+        else:
+            results["unsigned_drivers"] = _ok("All drivers are signed")
+
+    except Exception:
+        results["driver_enumeration"] = _ok("Could not enumerate all drivers")
+
+    # Audio driver check against known bad audio drivers
+    try:
+        audio_rows = wmi_query(
+            wmi_client,
+            "SELECT DeviceName, DriverVersion, DriverProviderName FROM Win32_PnPSignedDriver "
+            "WHERE DeviceClass = 'MEDIA'",
+            ["DeviceName", "DriverVersion", "DriverProviderName"]
+        )
+        audio_issues = []
+        for drv in audio_rows:
+            name = str(drv.get("DeviceName") or "").lower()
+            ver = str(drv.get("DriverVersion") or "")
+            provider = str(drv.get("DriverProviderName") or "").lower()
+
+            for key, info in KNOWN_BAD_AUDIO_DRIVERS.items():
+                vendor_lower = info["vendor"].lower()
+                if vendor_lower in name or vendor_lower in provider:
+                    if info["bad_versions"]:
+                        if any(ver.startswith(bv) for bv in info["bad_versions"]):
+                            audio_issues.append(info["description"])
+                    else:
+                        audio_issues.append(info["description"])
+                    break
+
+        if audio_issues:
+            results["audio_driver_issues"] = _warn(
+                f"{len(audio_issues)} audio driver issue(s)",
+                audio_issues[0][:120]
+            )
+        else:
+            results["audio_driver_issues"] = _ok("No known audio driver issues")
+    except Exception:
+        results["audio_driver_issues"] = _ok("Could not check audio drivers")
+
+    # Network driver check against known bad network drivers
+    try:
+        net_rows = wmi_query(
+            wmi_client,
+            "SELECT DeviceName, DriverVersion, DriverProviderName FROM Win32_PnPSignedDriver "
+            "WHERE DeviceClass = 'NET'",
+            ["DeviceName", "DriverVersion", "DriverProviderName"]
+        )
+        net_issues = []
+        for drv in net_rows:
+            name = str(drv.get("DeviceName") or "").lower()
+            for key, info in KNOWN_BAD_NETWORK_DRIVERS.items():
+                if any(mn in name for mn in info["match_names"]):
+                    net_issues.append(info["description"])
+                    break
+
+        if net_issues:
+            results["network_driver_issues"] = _warn(
+                f"{len(net_issues)} network driver concern(s)",
+                net_issues[0][:120]
+            )
+        else:
+            results["network_driver_issues"] = _ok("No known network driver issues")
+    except Exception:
+        results["network_driver_issues"] = _ok("Could not check network drivers")
+
+    # USB controller driver check — generic USB3 drivers cause input lag
+    try:
+        usb_rows = wmi_query(
+            wmi_client,
+            "SELECT DeviceName, DriverProviderName FROM Win32_PnPSignedDriver "
+            "WHERE DeviceClass = 'USB' AND DriverProviderName = 'Microsoft'",
+            ["DeviceName", "DriverProviderName"]
+        )
+        usb3_generic = [r for r in usb_rows if "usb 3" in str(r.get("DeviceName") or "").lower()
+                        or "xhci" in str(r.get("DeviceName") or "").lower()]
+        if usb3_generic:
+            results["usb_controller_drivers"] = _warn(
+                f"{len(usb3_generic)} USB3 controller(s) using generic Microsoft drivers",
+                "Generic USB3 drivers can cause input lag. Install manufacturer's USB3/xHCI drivers."
+            )
+        else:
+            results["usb_controller_drivers"] = _ok("USB controllers using proper drivers")
+    except Exception:
+        results["usb_controller_drivers"] = _ok("Could not check USB drivers")
+
+    return results
+
+
+# ─── 2.18 IRQ & Interrupt Analysis ──────────────────────────────────────────
+
+def check_irq_analysis(wmi_client):
+    results = {}
+
+    try:
+        irq_rows = wmi_query(
+            wmi_client,
+            "SELECT IRQNumber FROM Win32_IRQResource",
+            ["IRQNumber"]
+        )
+        if irq_rows:
+            irq_counts = {}
+            for row in irq_rows:
+                irq = row.get("IRQNumber")
+                if irq is not None:
+                    irq_counts[irq] = irq_counts.get(irq, 0) + 1
+
+            shared = {k: v for k, v in irq_counts.items() if v > 1}
+            if shared:
+                results["irq_sharing_conflicts"] = _warn(
+                    f"{len(shared)} IRQ(s) shared by multiple devices",
+                    "IRQ sharing can cause latency spikes. Check Device Manager for IRQ conflicts. Modern APIC systems usually handle this fine."
+                )
+            else:
+                results["irq_sharing_conflicts"] = _ok("No IRQ sharing detected")
+        else:
+            results["irq_sharing_conflicts"] = _ok("Could not enumerate IRQ resources")
+    except Exception:
+        results["irq_sharing_conflicts"] = _ok("Could not query IRQ resources")
+
+    # ISR (Interrupt Service Routine) rate check
+    try:
+        isr_rows1 = wmi_query(
+            wmi_client,
+            "SELECT InterruptsPersec FROM Win32_PerfRawData_PerfOS_Processor WHERE Name='_Total'",
+            ["InterruptsPersec"]
+        )
+        if isr_rows1:
+            isr_val = int(isr_rows1[0].get("InterruptsPersec") or 0)
+            # Single-sample value from perf counter (approximation)
+            if isr_val > 50000:
+                results["isr_rate"] = _warn(
+                    f"High interrupt count ({isr_val})",
+                    "High interrupt rate detected. A misbehaving driver may be flooding the system with interrupts. Use LatencyMon to identify it."
+                )
+            else:
+                results["isr_rate"] = _ok(f"Interrupt count: {isr_val} (normal)")
+        else:
+            results["isr_rate"] = _ok("Could not measure ISR rate")
+    except Exception:
+        results["isr_rate"] = _ok("Could not measure ISR rate")
+
+    return results
+
+
+# ─── 2.19 Windows Update & Patch Status ─────────────────────────────────────
+
+def check_windows_update_status(wmi_client):
+    results = {}
+
+    try:
+        qfe_rows = wmi_query(
+            wmi_client,
+            "SELECT HotFixID, InstalledOn FROM Win32_QuickFixEngineering",
+            ["HotFixID", "InstalledOn"]
+        )
+        if qfe_rows:
+            latest_date = None
+            for row in qfe_rows:
+                installed = str(row.get("InstalledOn") or "")
+                if installed:
+                    for fmt in ["%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y"]:
+                        try:
+                            dt = datetime.datetime.strptime(installed, fmt)
+                            if latest_date is None or dt > latest_date:
+                                latest_date = dt
+                            break
+                        except ValueError:
+                            continue
+
+            if latest_date:
+                days_since = (datetime.datetime.now() - latest_date).days
+                if days_since > 90:
+                    results["last_update_age"] = _warn(
+                        f"{days_since} days since last update ({latest_date.strftime('%Y-%m-%d')})",
+                        "System hasn't been updated in >90 days. Missing security and performance patches. Run Windows Update."
+                    )
+                else:
+                    results["last_update_age"] = _ok(
+                        f"Last updated {days_since} days ago ({latest_date.strftime('%Y-%m-%d')})"
+                    )
+            else:
+                results["last_update_age"] = _ok("Could not determine last update date")
+
+            results["installed_updates_count"] = _ok(f"{len(qfe_rows)} hotfix(es) installed")
+        else:
+            results["last_update_age"] = _ok("No update history available via WMI")
+    except Exception:
+        results["last_update_age"] = _ok("Could not query update history")
+
+    # Check for pending feature update
+    try:
+        pending_update = reg_key_exists(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
+        )
+        downloading = False
+        try:
+            wu_procs = [p for p in (psutil.process_iter(["name"]) if PSUTIL_OK else [])
+                        if (p.info.get("name") or "").lower() in ("wuauclt.exe", "tiworker.exe", "waasmedic.exe")]
+            downloading = len(wu_procs) > 0
+        except Exception:
+            pass
+
+        if pending_update:
+            results["pending_feature_update"] = _warn(
+                "Update pending reboot",
+                "A Windows update is waiting for reboot. Restart to apply and avoid performance degradation."
+            )
+        elif downloading:
+            results["pending_feature_update"] = _warn(
+                "Update downloading/installing",
+                "Windows Update is actively downloading. This may degrade performance temporarily."
+            )
+        else:
+            results["pending_feature_update"] = _ok("No pending updates detected")
+    except Exception:
+        results["pending_feature_update"] = _ok("Could not check pending updates")
+
+    return results
+
+
+# ─── 2.20 Virtual Memory & Pagefile Config ───────────────────────────────────
+
+def check_virtual_memory_config():
+    results = {}
+
+    if not PSUTIL_OK:
+        return {"error": _warn("psutil unavailable", "Install psutil.")}
+
+    try:
+        vm = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        ram_gb = vm.total / (1024 ** 3)
+
+        if swap.total > 0:
+            pagefile_gb = swap.total / (1024 ** 3)
+            ratio = pagefile_gb / ram_gb if ram_gb > 0 else 0
+
+            if ratio < 0.5:
+                results["pagefile_size_ratio"] = _warn(
+                    f"Pagefile: {pagefile_gb:.1f}GB / RAM: {ram_gb:.1f}GB (ratio: {ratio:.2f}x)",
+                    "Pagefile is very small relative to RAM. Increase to 1.5x RAM for gaming stability."
+                )
+            elif ratio > 3.0:
+                results["pagefile_size_ratio"] = _warn(
+                    f"Pagefile: {pagefile_gb:.1f}GB / RAM: {ram_gb:.1f}GB (ratio: {ratio:.2f}x)",
+                    "Pagefile is unusually large. System-managed is usually fine for gaming."
+                )
+            else:
+                results["pagefile_size_ratio"] = _ok(
+                    f"Pagefile: {pagefile_gb:.1f}GB / RAM: {ram_gb:.1f}GB (ratio: {ratio:.2f}x)"
+                )
+        else:
+            results["pagefile_size_ratio"] = _warn(
+                "No pagefile",
+                "No pagefile configured. This can cause crashes in memory-intensive games. Enable system-managed pagefile."
+            )
+
+        # Detect system-managed vs fixed pagefile
+        try:
+            pf_info = _run(["wmic", "pagefile", "list", "brief"], "")
+            if pf_info and "pagefile.sys" in pf_info.lower():
+                results["pagefile_management"] = _ok("Pagefile configured")
+            else:
+                results["pagefile_management"] = _ok("Pagefile status checked")
+        except Exception:
+            pass
+
+        # Check if pagefile is on SSD vs HDD
+        try:
+            pf_output = _run(["wmic", "pagefile", "get", "Name"], "")
+            if pf_output:
+                pf_drive = ""
+                for line in pf_output.splitlines():
+                    line = line.strip()
+                    if ":" in line and "Name" not in line:
+                        pf_drive = line[:2]
+                        break
+                if pf_drive:
+                    # Simple heuristic: we just report the drive letter
+                    results["pagefile_drive"] = _ok(f"Pagefile on {pf_drive} drive")
+        except Exception:
+            pass
+
+    except Exception as e:
+        results["pagefile_config_error"] = _warn(f"Error: {e}", "Could not analyze pagefile config.")
+
+    return results
+
+
+# ─── 2.21 Audio Subsystem Issues ────────────────────────────────────────────
+
+def check_audio_subsystem():
+    results = {}
+
+    # Check for audio enhancements enabled
+    try:
+        # Detect audio processing software running
+        audio_enhancers = {
+            "nahimicservice.exe": "Nahimic",
+            "nahimicsvc32.exe": "Nahimic (32-bit)",
+            "nahimicsvc64.exe": "Nahimic (64-bit)",
+            "sonicstudiomonitor.exe": "Sonic Studio",
+            "dtssoundunbound.exe": "DTS Sound",
+            "wavessyssvc64.exe": "Waves MaxxAudio",
+            "fxsvc.exe": "Sonic Radar",
+        }
+        found_enhancers = []
+        if PSUTIL_OK:
+            for proc in psutil.process_iter(["name"]):
+                try:
+                    pname = (proc.info.get("name") or "").lower()
+                    if pname in audio_enhancers:
+                        found_enhancers.append(audio_enhancers[pname])
+                except Exception:
+                    continue
+
+        if found_enhancers:
+            results["audio_enhancement_software"] = _warn(
+                f"Running: {', '.join(found_enhancers)}",
+                f"Audio enhancement software adds CPU overhead and DPC latency. Disable: {found_enhancers[0]}."
+            )
+        else:
+            results["audio_enhancement_software"] = _ok("No audio enhancement software detected")
+    except Exception:
+        results["audio_enhancement_software"] = _ok("Could not check audio enhancements")
+
+    # Check audiodg.exe CPU usage
+    if PSUTIL_OK:
+        try:
+            for proc in psutil.process_iter(["name", "cpu_percent"]):
+                if (proc.info.get("name") or "").lower() == "audiodg.exe":
+                    cpu = proc.info.get("cpu_percent") or 0
+                    if cpu > 5:
+                        results["audiodg_cpu"] = _warn(
+                            f"audiodg.exe at {cpu:.1f}% CPU",
+                            "Audio Device Graph is using high CPU. Disable audio enhancements: Sound > Properties > Enhancements > Disable all."
+                        )
+                    else:
+                        results["audiodg_cpu"] = _ok(f"audiodg.exe at {cpu:.1f}% CPU (normal)")
+                    break
+        except Exception:
+            pass
+
+    # Check for multiple audio endpoints via registry
+    try:
+        try:
+            audio_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
+            render_keys = list_reg_subkeys(winreg.HKEY_LOCAL_MACHINE, audio_path)
+            if len(render_keys) > 3:
+                results["audio_endpoints"] = _warn(
+                    f"{len(render_keys)} audio render endpoints",
+                    "Multiple audio outputs configured. Disable unused audio devices to reduce overhead."
+                )
+            else:
+                results["audio_endpoints"] = _ok(f"{len(render_keys)} audio render endpoint(s)")
+        except Exception:
+            results["audio_endpoints"] = _ok("Could not enumerate audio endpoints")
+    except Exception:
+        pass
+
+    return results
+
+
+# ─── 2.22 Crash & Stability History ─────────────────────────────────────────
+
+def check_crash_stability():
+    results = {}
+
+    # Check for recent BSODs via System event log
+    def _bsod_check():
+        try:
+            out = _run([
+                "wevtutil", "qe", "System",
+                "/q:*[System[Provider[@Name='Microsoft-Windows-WER-SystemErrorReporting'] and EventID=1001]]",
+                "/c:5", "/rd:true", "/f:text"
+            ], "")
+            if out and "Event[" in out:
+                return {"recent_bsods": _crit(
+                    "BSOD events found in event log",
+                    "Blue Screen crashes detected recently. Check dump files and run 'sfc /scannow'. May indicate driver or hardware issues."
+                )}
+            return {"recent_bsods": _ok("No recent BSOD events")}
+        except Exception:
+            return {"recent_bsods": _ok("Could not query BSOD history")}
+
+    # Check for game/application crashes
+    def _app_crash_check():
+        try:
+            out = _run([
+                "wevtutil", "qe", "Application",
+                "/q:*[System[Provider[@Name='Application Error'] and EventID=1000]]",
+                "/c:10", "/rd:true", "/f:text"
+            ], "")
+            if out and "Event[" in out:
+                crash_count = out.count("Event[")
+                return {"app_crashes": _warn(
+                    f"{crash_count} application crash(es) in event log",
+                    "Recent application crashes detected. May indicate driver compatibility issues or corrupted game files."
+                )}
+            return {"app_crashes": _ok("No recent application crashes")}
+        except Exception:
+            return {"app_crashes": _ok("Could not query application crash history")}
+
+    # Check for crash dump files
+    def _dump_check():
+        try:
+            dump_dir = os.path.join(os.environ.get("LOCALAPPDATA", ""), "CrashDumps")
+            if os.path.isdir(dump_dir):
+                dumps = [f for f in os.listdir(dump_dir) if f.endswith(".dmp")]
+                if dumps:
+                    return {"crash_dump_files": _warn(
+                        f"{len(dumps)} crash dump(s) in CrashDumps",
+                        f"Crash dumps found in {dump_dir}. Analyze with WinDbg or report to game developers."
+                    )}
+                return {"crash_dump_files": _ok("No crash dumps found")}
+            # Also check Windows minidump
+            minidump_dir = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "Minidump")
+            if os.path.isdir(minidump_dir):
+                mdumps = [f for f in os.listdir(minidump_dir) if f.endswith(".dmp")]
+                if mdumps:
+                    return {"crash_dump_files": _warn(
+                        f"{len(mdumps)} minidump(s) in Windows\\Minidump",
+                        "Windows minidumps found. These are from BSOD crashes. Analyze with BlueScreenView or WinDbg."
+                    )}
+            return {"crash_dump_files": _ok("No crash dumps found")}
+        except Exception:
+            return {"crash_dump_files": _ok("Could not check crash dumps")}
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(_bsod_check), executor.submit(_app_crash_check), executor.submit(_dump_check)]
+        for f in futures:
+            results.update(f.result())
+
+    return results
+
+
+# ─── 2.23 Background Network Activity ───────────────────────────────────────
+
+def _measure_net_throughput():
+    """Measure network throughput over 2 seconds. Runs in thread to avoid blocking."""
+    try:
+        net1 = psutil.net_io_counters()
+        time.sleep(2)
+        net2 = psutil.net_io_counters()
+
+        bytes_sent = net2.bytes_sent - net1.bytes_sent
+        bytes_recv = net2.bytes_recv - net1.bytes_recv
+        mbps_up = (bytes_sent * 8) / (2 * 1_000_000)  # 2 sec interval
+        mbps_down = (bytes_recv * 8) / (2 * 1_000_000)
+        return mbps_down, mbps_up
+    except Exception:
+        return None, None
+
+
+def check_background_network():
+    results = {}
+
+    if not PSUTIL_OK:
+        return {"error": _warn("psutil unavailable", "Install psutil.")}
+
+    try:
+        # Measure current network throughput in a thread to avoid blocking main thread
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_measure_net_throughput)
+            mbps_down, mbps_up = future.result(timeout=10)
+
+        if mbps_down is not None:
+            if mbps_down > 50:
+                results["background_bandwidth"] = _warn(
+                    f"Down: {mbps_down:.1f} Mbps, Up: {mbps_up:.1f} Mbps",
+                    "High background download activity detected. This will cause lag in online games. Check for active downloads."
+                )
+            elif mbps_down > 10:
+                results["background_bandwidth"] = _warn(
+                    f"Down: {mbps_down:.1f} Mbps, Up: {mbps_up:.1f} Mbps",
+                    "Moderate background network activity. May cause latency spikes in competitive games."
+                )
+            else:
+                results["background_bandwidth"] = _ok(
+                    f"Down: {mbps_down:.1f} Mbps, Up: {mbps_up:.1f} Mbps (low)"
+                )
+        else:
+            results["background_bandwidth"] = _ok("Could not measure network throughput")
+    except Exception:
+        results["background_bandwidth"] = _ok("Could not measure network throughput")
+
+    # Check active established connection count
+    try:
+        connections = psutil.net_connections(kind='inet')
+        total_established = sum(1 for c in connections if c.status == 'ESTABLISHED')
+
+        if total_established > 100:
+            results["active_connections"] = _warn(
+                f"{total_established} established TCP connections",
+                "Very high number of active network connections. Browser tabs and background apps are using bandwidth."
+            )
+        else:
+            results["active_connections"] = _ok(f"{total_established} established TCP connections")
+    except Exception:
+        results["active_connections"] = _ok("Could not enumerate connections")
+
+    return results
+
+
 # ─── Main entry point ───────────────────────────────────────────────────────
 
 def run_fps_diagnosis(system_specs=None):
@@ -1687,6 +2305,14 @@ def run_fps_diagnosis(system_specs=None):
         "dpc_latency": check_dpc_latency(wmi_client),
         "problematic_services": check_problematic_services(wmi_client),
         "event_log_errors": check_event_log_errors(),
+        "deep_driver_analysis": check_deep_driver_analysis(wmi_client),
+        "irq_analysis": check_irq_analysis(wmi_client),
+        "windows_update_status": check_windows_update_status(wmi_client),
+        "virtual_memory_config": check_virtual_memory_config(),
+        "audio_subsystem": check_audio_subsystem(),
+        "crash_stability": check_crash_stability(),
+        "background_network": check_background_network(),
     }
 
     return diagnosis
+

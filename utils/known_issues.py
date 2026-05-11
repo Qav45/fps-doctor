@@ -38,6 +38,33 @@ FPS_KILLER_PROCESSES = {
     "Speccy.exe": "Speccy hardware monitoring tool polls sensors frequently, adding CPU overhead.",
     "HWiNFO64.exe": "HWiNFO sensor monitoring polls hardware frequently. Can cause stutters in some games.",
     "CPUID_HWMonitor.exe": "CPU-Z HW Monitor polls hardware sensors frequently, adding small CPU overhead.",
+    # ─── New FPS killer processes ─────────────────────────────────────────
+    "NahimicSvc32.exe": "Nahimic audio service (32-bit variant). Known to cause DPC latency spikes and audio conflicts.",
+    "NahimicSvc64.exe": "Nahimic audio service (64-bit variant). Known to cause DPC latency spikes and audio conflicts.",
+    "A-VolumeSvc.exe": "Nahimic A-Volume service. Part of Nahimic suite that can cause audio and DPC issues.",
+    "NahimicNotifier.exe": "Nahimic notification service. Part of the Nahimic suite that adds background overhead.",
+    "SonicStudioMonitor.exe": "ASUS Sonic Studio monitor. Audio enhancement that can cause DPC latency and conflicts.",
+    "SonicStudioHelper.exe": "ASUS Sonic Studio helper. Audio processing that adds CPU overhead and can cause stutters.",
+    "SonicSuite3.exe": "ASUS Sonic Suite III. Audio software suite that adds processing overhead.",
+    "DragonCenter.exe": "MSI Dragon Center system utility. Polls hardware sensors and manages system settings, adding overhead.",
+    "MSIDragonCenter.exe": "MSI Dragon Center variant. CPU-intensive system monitoring and control utility.",
+    "CreativeCloud.exe": "Adobe Creative Cloud desktop app. Runs multiple background services and update checks.",
+    "ArmouryCrate.exe": "ASUS Armoury Crate system utility. Heavy resource usage for RGB, fan, and system management.",
+    "ArmouryCrate.Service.exe": "ASUS Armoury Crate background service. Continuous hardware polling and telemetry.",
+    "ArmouryCrate.UserSessionHelper.exe": "ASUS Armoury Crate session helper. Additional overhead from Armoury Crate suite.",
+    "LenovoVantage.exe": "Lenovo Vantage system utility. Runs background services and telemetry on Lenovo systems.",
+    "HPSupportAssistant.exe": "HP Support Assistant. Runs background updates and telemetry on HP systems.",
+    "DellSupportAssist.exe": "Dell SupportAssist. Runs hardware diagnostics and updates in background.",
+    "gamingservices.exe": "Xbox Gaming Services. Background process for Xbox integration on Windows.",
+    "gamingservicesnet.exe": "Xbox Gaming Services network component. Background network activity for Xbox.",
+    "GalaxyClient.exe": "GOG Galaxy client. Game launcher with background downloads and overlay.",
+    "Battle.net.exe": "Blizzard Battle.net launcher. Background update agent and social features.",
+    "Spotify.exe": "Spotify desktop app. Uses GPU hardware acceleration and network bandwidth.",
+    "msedge.exe": "Microsoft Edge browser. Uses GPU resources even when minimized with hardware acceleration.",
+    "CCleaner64.exe": "CCleaner running in background. System monitoring and cleaning can cause disk I/O spikes.",
+    "nzxt cam.exe": "NZXT CAM monitoring software. Polls hardware sensors frequently for monitoring.",
+    "RGBFusion2.0.exe": "Gigabyte RGB Fusion 2.0. RGB control software with known high CPU usage.",
+    "SignalRgb.exe": "SignalRGB unified RGB controller. Can cause high CPU usage with many devices.",
 }
 
 # Known problematic Windows services
@@ -62,15 +89,95 @@ PROBLEMATIC_SERVICES = {
     "CorsairGamingAudioConfig": "Corsair Audio Configuration - part of iCUE suite.",
 }
 
-# Known driver versions with issues
+# Known driver versions with issues — expanded with specific version ranges
 KNOWN_BAD_DRIVER_VERSIONS = {
+    # NVIDIA
     "nvidia_notes": "NVIDIA drivers 526.x had memory leak issues in DX12. Drivers 531.x+ are generally stable.",
     "nvidia_526": "NVIDIA 526.x series - known memory leak in DirectX 12 applications.",
     "nvidia_512": "NVIDIA 512.x series - known issues with some anti-cheat systems.",
+    "nvidia_551": "NVIDIA 551.x series - DX12 shader compilation stalls in Unreal Engine 5 games. Update to 555.x+.",
+    "nvidia_552": "NVIDIA 552.x series - known VRAM leak in DX12 titles. Upgrade to 555.85+.",
+    "nvidia_546": "NVIDIA 546.x series - intermittent TDR (GPU crash) with multi-monitor setups. Update to 551.23+.",
+    # AMD
     "amd_notes": "AMD drivers 22.x had stuttering issues in some titles. 23.x+ generally improved.",
+    "amd_24_1": "AMD 24.1.x - RDNA3 (RX 7000) intermittent black screen and driver timeout. Update to 24.5+.",
+    "amd_24_2": "AMD 24.2.x - DX11 regression causing lower FPS in older titles on RDNA2/RDNA3. Update to 24.3+.",
+    "amd_23_12": "AMD 23.12.x - known memory clock stuck at max idle on some RDNA3 cards. Update to 24.1+.",
+    # Intel
     "intel_arc_notes": "Intel Arc drivers pre-31.0 had significant performance and compatibility issues.",
+    "intel_arc_101_4032": "Intel Arc 101.4032 and earlier - major shader compilation stutter. Update to 101.4577+.",
+    "intel_arc_101_4502": "Intel Arc 101.4502 - Vulkan performance regression. Update to 101.4577+.",
+    # Generic
     "realtek_audio": "Older Realtek audio drivers (pre-6.0.9) can cause audiodg.exe high CPU.",
     "killer_network": "Intel Killer network drivers have had bloatware/performance issues. Consider switching to standard Intel drivers.",
+}
+
+# Known bad audio drivers
+KNOWN_BAD_AUDIO_DRIVERS = {
+    "realtek_pre_6.0.9": {
+        "vendor": "Realtek",
+        "description": "Realtek HD Audio drivers before 6.0.9xxx.x cause high CPU in audiodg.exe and DPC latency.",
+        "fix": "Update to latest Realtek driver from your motherboard manufacturer's support page.",
+        "bad_versions": ["6.0.1.", "6.0.2.", "6.0.3.", "6.0.4.", "6.0.5.", "6.0.6.", "6.0.7.", "6.0.8."],
+    },
+    "nahimic_any": {
+        "vendor": "Nahimic",
+        "description": "Nahimic audio drivers (all versions) are known to cause DPC latency spikes, audio conflicts, and stuttering.",
+        "fix": "Uninstall Nahimic completely. Use standard Realtek or manufacturer audio drivers instead.",
+        "bad_versions": [],  # All versions are problematic
+    },
+    "sonic_studio_any": {
+        "vendor": "ASUS Sonic Studio",
+        "description": "ASUS Sonic Studio audio software causes DPC latency and conflicts with game audio engines.",
+        "fix": "Uninstall Sonic Studio and use standard audio drivers.",
+        "bad_versions": [],
+    },
+    "dts_audio": {
+        "vendor": "DTS",
+        "description": "DTS:X Ultra and DTS Sound Unbound can cause high CPU usage in audiodg.exe and latency spikes.",
+        "fix": "Disable DTS audio processing in DTS Sound settings or uninstall if not needed.",
+        "bad_versions": [],
+    },
+    "waves_maxxaudio": {
+        "vendor": "Waves MaxxAudio",
+        "description": "Waves MaxxAudio Pro (Dell/Lenovo) causes DPC latency and CPU overhead for audio processing.",
+        "fix": "Disable MaxxAudio enhancement in Dell/Lenovo audio settings or uninstall the Waves component.",
+        "bad_versions": [],
+    },
+}
+
+# Known bad network drivers
+KNOWN_BAD_NETWORK_DRIVERS = {
+    "killer_e2xxx": {
+        "vendor": "Intel Killer",
+        "description": "Intel Killer E2xxx/E3xxx Ethernet with Killer Control Center causes network latency spikes and CPU overhead.",
+        "fix": "Uninstall Killer Control Center and install standard Intel I225-V/I226-V drivers instead.",
+        "match_names": ["killer e2", "killer e3", "killer ax", "killer wi-fi"],
+    },
+    "killer_suite": {
+        "vendor": "Intel Killer",
+        "description": "Killer Intelligence Engine and Killer Control Center add latency through packet prioritization.",
+        "fix": "Uninstall Killer Suite. Use standard Intel network drivers for lower latency.",
+        "match_names": ["killer"],
+    },
+    "realtek_2.5g_old": {
+        "vendor": "Realtek",
+        "description": "Realtek RTL8125 2.5G Ethernet drivers before 10.048 have known disconnection and latency issues.",
+        "fix": "Update to latest Realtek 2.5G driver from the Realtek website (10.048+).",
+        "match_names": ["realtek gaming 2.5", "rtl8125"],
+    },
+    "intel_i225v_rev1": {
+        "vendor": "Intel",
+        "description": "Intel I225-V (Rev 1-2) has hardware-level issues causing intermittent disconnects under load.",
+        "fix": "Check if your board has I225-V Rev 3. Use latest Intel driver. Consider USB Ethernet adapter if issues persist.",
+        "match_names": ["i225-v"],
+    },
+    "broadcom_wifi_old": {
+        "vendor": "Broadcom",
+        "description": "Older Broadcom Wi-Fi drivers can cause high DPC latency. Common in older laptops.",
+        "fix": "Update to latest Broadcom/Qualcomm driver from manufacturer or use Windows Update.",
+        "match_names": ["broadcom 802.11"],
+    },
 }
 
 # Processes that are known overlays (inject into game process)
@@ -97,4 +204,27 @@ OVERLAY_PROCESSES = [
     "medal.exe",
     "overwolf.exe",
     "OverwolfBrowser.exe",
+    # ─── New overlay processes ────────────────────────────────────────────
+    "Outplayed.exe",
+    "outplayed.exe",
+    "FBX.exe",
+    "fbx.exe",
+    "FBXCapture.exe",
+    "RadeonSoftware.exe",
+    "AMDRSServ.exe",
+    "AMDCrashDefender64.exe",
+    "PresentMon.exe",
+    "presentmon.exe",
+    "IntelPresentMon.exe",
+    "Action.exe",
+    "Lightstream.exe",
+    "XSplit.Core.exe",
+    "XSplitBroadcaster.exe",
+    "ShadowPlay.exe",
+    "ShareX.exe",
+    "Loom.exe",
+    "GeForceNOW.exe",
+    "SteelSeriesGGClient.exe",
+    "AnyDesk.exe",
+    "TeamViewer.exe",
 ]

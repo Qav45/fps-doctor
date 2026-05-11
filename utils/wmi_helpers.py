@@ -7,6 +7,15 @@ def get_wmi_client():
         return None
 
 
+def get_wmi_client_ns(namespace):
+    """Return wmi.WMI(namespace=namespace) or None if unavailable."""
+    try:
+        import wmi
+        return wmi.WMI(namespace=namespace)
+    except Exception:
+        return None
+
+
 def wmi_query(wmi_client, wql, fields=None):
     """Execute WQL query, return list of dicts. Returns [] on error."""
     if wmi_client is None:

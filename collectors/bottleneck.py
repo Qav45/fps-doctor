@@ -124,7 +124,6 @@ def analyze_bottlenecks(system_specs, live_sample=None):
     swap_pct = live_sample.get("swap_pct")
     gpu_temp = live_sample.get("gpu_temp")
     gpu_mem_pct = live_sample.get("gpu_mem_pct")
-    cpu_freq = live_sample.get("cpu_freq")
     cpu_per_core = live_sample.get("cpu_per_core", [])
 
     # ── CPU Bottleneck ──────────────────────────────────────────────────────
@@ -321,7 +320,6 @@ def analyze_bottlenecks(system_specs, live_sample=None):
         try:
             # Sample background process CPU
             bg_cpu_total = 0.0
-            game_like_procs = set()
             all_procs_cpu = []
             for proc in psutil.process_iter(["name", "cpu_percent", "pid"]):
                 try:
