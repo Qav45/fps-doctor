@@ -361,10 +361,10 @@ def main():
                 transient=True,
             ) as progress:
                 task = progress.add_task("Running diagnosis...", total=23)
-                diagnosis = run_fps_diagnosis(system_specs)
+                diagnosis = run_fps_diagnosis(system_specs, no_benchmark=args.no_benchmark)
                 progress.update(task, completed=23)
         else:
-            diagnosis = run_fps_diagnosis(system_specs)
+            diagnosis = run_fps_diagnosis(system_specs, no_benchmark=args.no_benchmark)
 
         print_phase(console, 2, "FPS Loss Diagnosis", "done")
     except Exception as e:

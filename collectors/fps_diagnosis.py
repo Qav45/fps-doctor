@@ -227,6 +227,11 @@ def check_background_processes():
         return {"error": _warn("psutil unavailable", "Install psutil for process analysis.")}
 
     try:
+        # Prime process CPU counters so cpu_percent is not always 0.0
+        for _ in psutil.process_iter(["cpu_percent"]):
+            pass
+        time.sleep(0.5)
+
         all_procs = []
         fps_killers_found = []
         total_bg_cpu = 0.0
@@ -606,7 +611,7 @@ def _disk_io_benchmark():
         with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as f:
             tmp_path = f.name
             block = b"\x00" * block_size
-            t0 = time.time()
+            t0 = time.perf_counter()
             for _ in range(num_blocks):
                 f.write(block)
             f.flush()
@@ -614,18 +619,18 @@ def _disk_io_benchmark():
                 os.fsync(f.fileno())
             except Exception:
                 pass
-        write_time = time.time() - t0
+        write_time = time.perf_counter() - t0
 
-        t0 = time.time()
+        t0 = time.perf_counter()
         with open(tmp_path, "rb") as f:
             while f.read(block_size):
                 pass
-        read_time = time.time() - t0
+        read_time = time.perf_counter() - t0
 
         os.unlink(tmp_path)
         return (
-            round(total_mb / read_time, 1) if read_time > 0 else None,
-            round(total_mb / write_time, 1) if write_time > 0 else None,
+            round(total_mb / max(read_time, 0.0001), 1),
+            round(total_mb / max(write_time, 0.0001), 1),
         )
     except Exception:
         if tmp_path:
@@ -636,7 +641,7 @@ def _disk_io_benchmark():
         return None, None
 
 
-def check_storage_issues():
+def check_storage_issues(no_benchmark=False):
     results = {}
 
     if PSUTIL_OK:
@@ -665,20 +670,23 @@ def check_storage_issues():
             results["disk_space_error"] = _warn("Error", "Could not check disk space.")
 
     # Quick disk I/O benchmark
-    try:
-        read_mbps, write_mbps = _disk_io_benchmark()
-        if read_mbps is not None and write_mbps is not None:
-            if read_mbps < 100:
-                results["disk_sequential_read"] = _warn(
-                    f"{read_mbps} MB/s",
-                    "Very slow sequential read speed. Expected: HDD ~100+ MB/s, SATA SSD ~500+ MB/s, NVMe ~1000+ MB/s."
-                )
+    if no_benchmark:
+        results["disk_sequential_read"] = _ok("Skipped via --no-benchmark")
+    else:
+        try:
+            read_mbps, write_mbps = _disk_io_benchmark()
+            if read_mbps is not None and write_mbps is not None:
+                if read_mbps < 100:
+                    results["disk_sequential_read"] = _warn(
+                        f"{read_mbps} MB/s",
+                        "Very slow sequential read speed. Expected: HDD ~100+ MB/s, SATA SSD ~500+ MB/s, NVMe ~1000+ MB/s."
+                    )
+                else:
+                    results["disk_sequential_read"] = _ok(f"{read_mbps} MB/s read, {write_mbps} MB/s write")
             else:
-                results["disk_sequential_read"] = _ok(f"{read_mbps} MB/s read, {write_mbps} MB/s write")
-        else:
-            results["disk_sequential_read"] = _ok("Could not benchmark (temp file error)")
-    except Exception:
-        pass
+                results["disk_sequential_read"] = _ok("Could not benchmark (temp file error)")
+        except Exception:
+            pass
 
     # SSD TRIM status
     try:
@@ -2284,7 +2292,7 @@ def check_background_network():
 
 # ─── Main entry point ───────────────────────────────────────────────────────
 
-def run_fps_diagnosis(system_specs=None):
+def run_fps_diagnosis(system_specs=None, no_benchmark=False):
     """Phase 2 — exhaustive FPS loss checks. Returns a dict with sections."""
     wmi_client = get_wmi_client()
 
@@ -2293,7 +2301,7 @@ def run_fps_diagnosis(system_specs=None):
         "background_processes": check_background_processes(),
         "thermal_power": check_thermal_power(),
         "memory_issues": check_memory_issues(),
-        "storage_issues": check_storage_issues(),
+        "storage_issues": check_storage_issues(no_benchmark=no_benchmark),
         "network_issues": check_network_issues(),
         "software_overlays": check_software_overlays(),
         "windows_settings": check_windows_settings(),

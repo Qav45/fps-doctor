@@ -228,7 +228,7 @@ def format_bottlenecks(bottlenecks):
         rec = b.get("recommendation", "")
 
         lines.append(f"\n  [{i}] {btype}  [Severity: {_severity_label(severity).strip()}]")
-        lines.append(f"      " + _line("-", 70))
+        lines.append("      " + _line("-", 70))
         lines.append(f"      Description: {desc}")
 
         # Word wrap recommendation
@@ -646,7 +646,7 @@ def format_health_score(score_data):
 
     lines.append(f"\n  Score: {score}/100   Grade: {grade}")
     lines.append(f"  [{bar}]")
-    lines.append(f"\n  Breakdown:")
+    lines.append("\n  Breakdown:")
     lines.append(f"    Critical issues:      {bd.get('criticals', 0):>3}  × -10 pts each")
     lines.append(f"    Warnings:             {bd.get('warnings', 0):>3}  × -3 pts each")
     lines.append(f"    High bottlenecks:     {bd.get('high_bottlenecks', 0):>3}  × -8 pts each")
